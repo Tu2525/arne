@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, midTask, mmss, nextTtl, planSwitch, summaryPrompt, tierOf } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, midTask, mmss, nextTtl, planSwitch, shortModel, summaryPrompt, tierOf } from './econ'
 import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
@@ -81,17 +81,15 @@ async function compactNow($: any, note: string): Promise<boolean> {
 // --- The held prompt (step 17a) ---
 // A prompt typed on a cold, big chat waits here until the person picks Compact & send or Send anyway.
 const CONTINUE_TEXT = 'Continue where you left off.'
-const passOnce = new Set<string>() // texts arne resubmits: each passes the hold once, then is forgotten
 let compactSending = false // a Compact & send is running: its compaction must not also send "Continue"
 let lastReason: string | undefined // how the last main turn ended
 
-// Sends a prompt as the person's own words, past the hold, once.
+// Sends a prompt as the person's own words. A plugin's own $.prompt.submit skips that plugin's
+// prompt.submit hooks (seen in the test kit), so it is never held again and never routed there.
 async function sendAsUser($: any, text: string) {
-  passOnce.add(text)
   try {
     await $.prompt.submit({ text, asUser: true })
   } catch {
-    passOnce.delete(text)
     $.ui.toast('arne: could not send your message; it is back in the prompt box')
     await $.prompt.fill({ text, mode: 'replace' }).catch(() => undefined)
   }
@@ -103,7 +101,7 @@ async function compactAndSend($: any) {
   await update($, held, () => null) // cleared first: a second click finds nothing to send
   compactSending = true
   const ok = await compactNow($, '').finally(() => (compactSending = false))
-  if (ok) await sendAsUser($, text)
+  if (ok) await routeAndSend($, text)
   else await update($, held, () => text)
 }
 
@@ -111,7 +109,7 @@ async function sendAnyway($: any) {
   const text = await read($, held)
   if (!text) return
   await update($, held, () => null)
-  await sendAsUser($, text)
+  await routeAndSend($, text)
 }
 
 
@@ -123,7 +121,8 @@ let expected: string | undefined
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
 let afterCompact = false // a compact just ran: the next prompt is a cache boundary
-let switchAfterTurn: string | undefined // the real /model to run once the turn is done
+// Decisions made at prompt.submit, by text, for the turn.start of the same prompt.
+const planned = new Map<string, Decision>()
 // Subagent decisions, by agentId, so each step of a run uses its turn's choice.
 const agents = new Map<string, Decision | undefined>()
 
@@ -229,6 +228,92 @@ async function startLaya($: any) {
   }
 }
 
+// laya -> haiku -> prev -> default. The chain falls through silently.
+function backendsOf($: any, backend: string): Backend[] {
+  const haiku: Backend = {
+    name: 'haiku',
+    ask: async text => {
+      const r = await $.model.complete(
+        { model: 'haiku', prompt: text.slice(0, 4000), system: SYSTEM, effort: 'low' },
+        { timeoutMs: 3000 },
+      )
+      return r.isAnswered ? parseVerdict(r.text) : undefined
+    },
+  }
+  const laya: Backend = {
+    name: 'laya',
+    ask: async text => {
+      const r = await $.http.fetch(`${LAYA_URL}/v1/systemone`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: layaBody(text),
+      })
+      return r.ok ? layaVerdict(JSON.parse(r.text).answers) : undefined
+    },
+  }
+  return backend === 'laya' ? [laya, haiku] : backend === 'haiku' ? [haiku] : []
+}
+
+// The main loop's decision for one prompt, inside the floor and ceiling (pins included).
+async function decideMain($: any, text: string): Promise<Decision | undefined> {
+  const s = await settings($)
+  if (!s.enabled) return undefined
+  if (s.backend === 'laya' && !layaUp) {
+    layaUp = await layaHealthy($)
+    if (!layaUp) void startLaya($)
+  }
+  const r = await route(text, { prev, paused: await read($, isPaused), pin: s.pin ?? undefined, backends: backendsOf($, s.backend) })
+  if (!r) return undefined
+  const d = {
+    ...r,
+    tier: clampTier(r.tier, live.modelFloor, live.modelCeiling),
+    effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling),
+  }
+  prev = d
+  return d
+}
+
+// The model the real /model should move to before this prompt, or undefined to stay.
+// A pin always moves; otherwise only where planSwitch says moving pays (a cache boundary, or worth it).
+async function switchTarget($: any, d: Decision): Promise<string | undefined> {
+  const chat = tierOf(await $.session.model())
+  if (!chat || d.tier === chat) return undefined
+  if (d.source === 'pin') return MODEL[d.tier]
+  const c: Cache | null = await read($, cache)
+  const plan = planSwitch({ decided: d.tier, chat, C: c?.C ?? 0, warmUntil: c?.warmUntil ?? {}, now: await $.clock.now(), afterCompact })
+  return plan.why === 'sticky' ? undefined : MODEL[d.tier]
+}
+
+// Runs the real /model, then sends the dropped prompt once, whether or not the switch worked.
+async function switchThenSend($: any, target: string, text: string) {
+  // The person may have picked a model while this waited: theirs stands.
+  if ((await modeOf($)) === 'on') {
+    const was = expected
+    expected = target
+    switching = true
+    try {
+      await $.command.run({ command: 'model', args: target })
+    } catch {
+      expected = was
+      planned.delete(text) // decided for a model it is not on: turn.start decides again
+      $.ui.toast(`arne: could not switch /model to ${shortModel(target)}; sending on the current model`)
+    } finally {
+      switching = false
+    }
+  }
+  await sendAsUser($, text)
+}
+
+// A prompt arne sends for the person (a released hold, a continue) gets the typed prompt's treatment
+// here, since prompt.submit will not see it: decided, and the real /model moved first when it should.
+async function routeAndSend($: any, text: string) {
+  const d = await decideMain($, text)
+  if (d) planned.set(text, d)
+  const target = d && (await switchTarget($, d))
+  if (target) await switchThenSend($, target, text)
+  else await sendAsUser($, text)
+}
+
 // $.fs has no append: read, then write the whole file. ponytail: O(n) per turn, fine below ~10k rows.
 async function appendLog($: any, row: Row & { text: string; agent?: string; decided?: string }) {
   try {
@@ -305,32 +390,9 @@ export const register: Register = (on, options) => {
     return r
   }).catch(($, e, next) => next(e))
 
-  // /model waits for an idle session, so it runs from a timer, never inside the turn's own hooks.
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId === undefined) lastReason = e.reason
-    const target = switchAfterTurn
-    if (e.agentId === undefined && target) {
-      switchAfterTurn = undefined
-      switching = true
-      $.clock.after(0, async () => {
-        // The person may have picked a model while this waited: theirs stands.
-        if ((await modeOf($)) !== 'on') {
-          switching = false
-          return
-        }
-        const was = expected
-        expected = target
-        try {
-          await $.command.run({ command: 'model', args: target })
-        } catch {
-          expected = was
-          $.ui.toast(`arne: could not switch /model to ${target}`)
-        } finally {
-          switching = false
-        }
-      })
-    }
     return r
   })
 
@@ -366,21 +428,30 @@ export const register: Register = (on, options) => {
     afterCompact = true
     const r = await next(e)
     if (e.trigger === 'manual' && !compactSending && live.continueAfterCompact && !(await read($, held)) && midTask(lastReason, e.compact_summary)) {
-      $.clock.after(0, () => sendAsUser($, CONTINUE_TEXT))
+      $.clock.after(0, () => routeAndSend($, CONTINUE_TEXT))
     }
     return r
   }).catch(($, e, next) => next(e))
 
-  // Holds a prompt typed on a cold, big chat; arne's own resubmits pass once, as the person's words.
+  // A typed prompt is decided here, before its turn exists. On a cold, big chat it is held (17a). When
+  // the decision moves the model, the prompt is dropped, the real /model runs, and the prompt is sent
+  // again (17c): Claude's own picker then always shows the model the request runs on.
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin.kind === 'plugin' && passOnce.delete(e.text)) return next(e)
     const typed = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
-    // Not held: commands, prompts typed into a running turn, and attachments (a resubmit would lose them).
+    // Left alone: commands, prompts typed into a running turn, and attachments (a resubmit would lose them).
     if (!typed || e.command || e.isMeta || e.turnId !== undefined || e.attachments?.length) return next(e)
-    if ((await modeOf($)) !== 'on' || (await read($, held))) return next(e)
-    if (!(await coldOffer($, await $.clock.now()))) return next(e)
-    await update($, held, () => e.text)
-    return { drop: 'arne is holding your message: the cache is cold. Pick Compact & send or Send anyway above the prompt.' }
+    if ((await modeOf($)) !== 'on') return next(e)
+    if (!(await read($, held)) && (await coldOffer($, await $.clock.now()))) {
+      await update($, held, () => e.text)
+      return { drop: 'arne is holding your message: the cache is cold. Pick Compact & send or Send anyway above the prompt.' }
+    }
+    await update($, routing, () => true)
+    const d = await decideMain($, e.text).finally(() => update($, routing, () => false))
+    if (d) planned.set(e.text, d)
+    const target = d && (await switchTarget($, d))
+    if (!target) return next(e)
+    $.clock.after(0, () => switchThenSend($, target, e.text))
+    return { drop: `arne: switching to ${shortModel(target)} first; your message follows.` }
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'arne' }, async ($, e) => {
@@ -449,7 +520,7 @@ export const register: Register = (on, options) => {
         const warm = (['S', 'M', 'L'] as Tier[])
           .map(t => `${MODEL[t]} ${(c.warmUntil[t] ?? 0) > now ? `warm ${mmss(c.warmUntil[t]! - now)}` : 'cold'}`)
           .join(', ')
-        return { text: `arne debug: ${await modeOf($)}, ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. expected ${expected ?? 'none'}, switch queued ${switchAfterTurn ?? 'none'}, after compact ${afterCompact}.` }
+        return { text: `arne debug: ${await modeOf($)}, ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. expected ${expected ?? 'none'}, switching ${switching}, after compact ${afterCompact}.` }
       }
       default: {
         const mode = await modeOf($)
@@ -463,38 +534,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     const s = await settings($)
-    if (e.agentId === undefined) {
-      await update($, routing, () => true)
-      await update($, isOff, () => !s.enabled)
-    }
-    const haiku: Backend = {
-      name: 'haiku',
-      ask: async text => {
-        const r = await $.model.complete(
-          { model: 'haiku', prompt: text.slice(0, 4000), system: SYSTEM, effort: 'low' },
-          { timeoutMs: 3000 },
-        )
-        return r.isAnswered ? parseVerdict(r.text) : undefined
-      },
-    }
-    const laya: Backend = {
-      name: 'laya',
-      ask: async text => {
-        const r = await $.http.fetch(`${LAYA_URL}/v1/systemone`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: layaBody(text),
-        })
-        return r.ok ? layaVerdict(JSON.parse(r.text).answers) : undefined
-      },
-    }
-    // laya -> haiku -> prev -> default. The chain falls through silently.
-    const backends =
-      s.backend === 'laya' ? [laya, haiku] : s.backend === 'haiku' ? [haiku] : []
-    if (s.backend === 'laya' && e.agentId === undefined && !layaUp) {
-      layaUp = await layaHealthy($)
-      if (!layaUp) void startLaya($)
-    }
+    if (e.agentId === undefined) await update($, isOff, () => !s.enabled)
 
     if (e.agentId === undefined) {
       const model = await $.session.model()
@@ -504,41 +544,21 @@ export const register: Register = (on, options) => {
       if (expected !== undefined && !switching && tierOf(model) !== tierOf(expected) && s.enabled) await update($, isPaused, () => true)
       expected ??= model
       await update($, sessionModel, () => model)
-      const paused = await read($, isPaused)
 
-      const routed0 = s.enabled
-        ? await route(e.text, { prev, paused, pin: s.pin ?? undefined, backends })
-        : undefined
-      // The floor and ceiling bind every decision, pins included.
-      const decided = routed0 && {
-        ...routed0,
-        tier: clampTier(routed0.tier, live.modelFloor, live.modelCeiling),
-        effort: clampEffort(routed0.effort, live.effortFloor, live.effortCeiling),
+      // Decided at prompt.submit for a typed prompt; anything else (a notification, a prompt typed
+      // mid-turn) is decided here, but its model can no longer move.
+      let decided = planned.get(e.text)
+      planned.delete(e.text)
+      if (!decided) {
+        await update($, routing, () => true)
+        decided = await decideMain($, e.text).finally(() => update($, routing, () => false))
       }
-      if (decided) prev = decided
-      current = decided
-      await update($, routing, () => false)
+      // The request runs on the session's model, so the log and band say that model, with the reason.
       const chat = tierOf(model)
-      if (decided && chat) {
-        const c = await read($, cache)
-        const plan = planSwitch({
-          decided: decided.tier,
-          chat,
-          C: c?.C ?? 0,
-          warmUntil: c?.warmUntil ?? {},
-          now: await $.clock.now(),
-          afterCompact,
-        })
-        // A pin is the person's call: it skips stickiness, but the real /model still waits for a boundary.
-        if (plan.why === 'sticky' && decided.source !== 'pin') {
-          current = { ...decided, tier: chat, reason: `${decided.reason}; sticky (cache warm)` }
-        }
-        // This turn's requests already go to the new tier; the real /model follows once the turn ends.
-        if (plan.real) {
-          afterCompact = false
-          switchAfterTurn = MODEL[decided.tier]
-        }
-      }
+      current =
+        decided && chat && decided.tier !== chat
+          ? { ...decided, tier: chat, reason: `${decided.reason}; stays on ${shortModel(model)} (cache warm, or mid-turn)` }
+          : decided
       $.ui.status(statusOf(await modeOf($), model))
       if (current) {
         const row: Row = {
@@ -556,7 +576,7 @@ export const register: Register = (on, options) => {
       }
     } else {
       const agent = (await $.agent.list()).find(a => a.id === e.agentId)
-      const d = await route(e.text, { agentType: agent?.type, backends })
+      const d = await route(e.text, { agentType: agent?.type, backends: backendsOf($, s.backend) })
       agents.set(e.agentId, d)
       if (d) {
         const row: Row = { key: `${e.turnId}:${e.agentId}`, model: MODEL[d.tier], effort: d.effort, reason: d.reason, source: d.source, out: 0, cacheRead: 0 }
@@ -575,8 +595,11 @@ export const register: Register = (on, options) => {
     const effortOwned = await read($, effortless)
     // `e` is the app's own request, before arne touches it: its effort is what the native control says.
     if (isMain && (e.effort ?? null) !== (await read($, appEffort))) await update($, appEffort, () => e.effort ?? null)
+    // The main loop keeps the session's model (17c: no silent rewrite; the real /model moved it, or it
+    // stays). Subagents still get their model per request, since the picker cannot show them.
+    const model = decision && !isMain ? MODEL[decision.tier] : e.model
     const routed = decision
-      ? { ...e, model: MODEL[decision.tier], effort: effortOwned ? e.effort : decision.tier === 'S' ? undefined : decision.effort }
+      ? { ...e, model, effort: effortOwned ? e.effort : tierOf(model) === 'S' ? undefined : decision.effort }
       : e
     if (isMain && decision) {
       const c = await read($, cache)
