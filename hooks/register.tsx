@@ -414,7 +414,8 @@ async function appendLog($: any, row: Row & { text: string; agent?: string; deci
 // A main-loop response landed: the answering model's cache is warm for one more TTL.
 async function cacheTouched($: any, model: string, usage: unknown) {
   const tier = tierOf(model)
-  if (!tier) return
+  // No usage means no response landed (an interrupted or failed step): the cache and its size are unchanged.
+  if (!tier || !usage) return
   const now: number = await $.clock.now()
   const since = lastResponseAt === undefined ? undefined : now - lastResponseAt
   lastResponseAt = now
@@ -696,14 +697,6 @@ export const register: Register = (on, options) => {
     const routed = decision
       ? { ...e, model, effort: effortOwned ? e.effort : tierOf(model) === 'S' ? undefined : decision.effort }
       : e
-    if (isMain && decision) {
-      const c = await read($, cache)
-      const now = await $.clock.now()
-      const tier = tierOf(routed.model)
-      const warmLeftMs = tier ? (c?.warmUntil[tier] ?? 0) - now : 0
-      $.ui.status(bandText({ off: false, paused: false, routing: false, model: routed.model, effort: decision.effort, warmLeftMs, C: c?.C ?? 0 }).short)
-    }
-
     const r = yield* next(routed)
     if (isMain) await cacheTouched($, routed.model, r.usage)
     if (!decision) return r
@@ -912,7 +905,7 @@ export const register: Register = (on, options) => {
             {l && (
               <Box flexDirection="row" gap={1}>
                 <Text color="subtle">
-                  Why  {l.reason} ({l.source}) · last turn ${lastCost.toFixed(3)}
+                  Why  {l.reason} ({l.source}){lastCost > 0 ? ` · last turn ${lastCost.toFixed(3)}` : ''}
                 </Text>
                 <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
                 <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />

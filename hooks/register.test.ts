@@ -2,10 +2,13 @@ import { expect, mock, test } from 'claude-code/testing'
 
 // The session beneath arne: a model /model moves, prompts that enter, requests that go out.
 function engine(on: any, start = 'claude-opus-5-5') {
-  const s = { model: start, ran: [] as string[], entered: [] as string[], sent: [] as string[], usage: null as unknown }
+  const s = { model: start, ran: [] as string[], entered: [] as string[], sent: [] as string[], usage: null as unknown, statuses: [] as string[] }
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on)
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.status', (_$: unknown, e: unknown) => {
+    s.statuses.push(JSON.stringify(e ?? null))
+    return { value: undefined }
+  })
   on('classic.PostModelSwitch', () => ({}))
   on('session.model', () => ({ value: s.model }))
   on('prompt.submit', (_$: unknown, e: { text: string }) => {
@@ -163,4 +166,20 @@ test('the band never prefixes "arne:", says off in words, and the settings pane 
 
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', props: {}, requestId: 'arne-settings', viewport: { columns: 80, rows: 30 } })
   for (const group of ['Routing', 'Models', 'Cache & compact']) expect(await pane.find({ type: 'Text', text: group })).toBeDefined()
+})
+
+test('a step with no usage keeps the cache size, and the footer gets no status while on (17g)', async ($: any, on: any) => {
+  const { s } = engine(on)
+  s.usage = { input_tokens: 50_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 't0', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  s.usage = null // an interrupted step
+  for await (const _ of $.turn.step({ turnId: 't0', index: 1, model: s.model, effort: 'medium', messageCount: 2 })) {
+    // drain
+  }
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
+  expect(await band.find({ type: 'Text', text: /25% full/ })).toBeDefined()
+  // The footer already shows the model and effort; arne adds nothing there while it runs.
+  expect(s.statuses.filter(x => x.includes('·'))).toEqual([])
 })
