@@ -2,9 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
+import { CACHE_TTL, contextOf, mmss, nextTtl, tierOf } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
-import type { Row } from '../types'
+import type { Cache, Row } from '../types'
 
 const LOG_FILE = 'C:/Users/tarek/.claude/arne/decisions.jsonl' // local only, never shared
 const PANE = 'arne-log'
@@ -12,13 +13,15 @@ const TIER_OF: Record<string, Tier> = { haiku: 'S', sonnet: 'M', opus: 'L' }
 
 const last = atom({ plugin: 'arne', key: 'last' } as const, null)
 const log = atom({ plugin: 'arne', key: 'log' } as const, [])
+const cache = atom({ plugin: 'arne', key: 'cache' } as const, null)
+const clockNow = atom({ plugin: 'arne', key: 'now' } as const, 0)
 
 // Module state. Reset on a reload, like every module variable.
 let current: Decision | undefined
 let prev: Decision | undefined
 let baseline: string | undefined // the session model arne last saw
 let paused = false
-let turnNo = 0
+let lastResponseAt: number | undefined
 // Subagent decisions, by agentId, so each step of a run uses its turn's choice.
 const agents = new Map<string, Decision | undefined>()
 
@@ -63,7 +66,6 @@ async function startLaya($: any) {
   }
 }
 
-// Best effort: a failed write never blocks a turn.
 // $.fs has no append: read, then write the whole file. ponytail: O(n) per turn, fine below ~10k rows.
 async function appendLog($: any, row: Row & { text: string; agent?: string }) {
   try {
@@ -74,11 +76,31 @@ async function appendLog($: any, row: Row & { text: string; agent?: string }) {
   }
 }
 
+// A main-loop response landed: the answering model's cache is warm for one more TTL.
+async function cacheTouched($: any, model: string, usage: unknown) {
+  const tier = tierOf(model)
+  if (!tier) return
+  const now: number = await $.clock.now()
+  const since = lastResponseAt === undefined ? undefined : now - lastResponseAt
+  lastResponseAt = now
+  await update($, cache, (c: Cache | null): Cache => {
+    const ttl = nextTtl(c?.ttl ?? '5m', usage, since)
+    return { ttl, C: contextOf(usage), model: tier, warmUntil: { ...c?.warmUntil, [tier]: now + CACHE_TTL[ttl] } }
+  })
+  await update($, clockNow, () => now)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'arne',
-      description: 'Auto model and effort routing: on, off, pin, unpin, why, log, backend',
+      description: 'Auto model and effort routing: on, off, pin, unpin, why, log, backend, debug',
+    })
+    // Drives the band's countdown. ponytail: a 1s state write; slow it down if redraws ever cost.
+    $.clock.every(1000, async () => {
+      if ((await read($, cache)) === null) return
+      const now = await $.clock.now()
+      await update($, clockNow, () => now)
     })
     return next(e)
   })
@@ -124,9 +146,18 @@ export const register: Register = on => {
       case 'log':
         await $.ui.open({ id: PANE, title: 'arne log' })
         return { text: 'arne log opened.' }
+      case 'debug': {
+        const c = await read($, cache)
+        const now = await $.clock.now()
+        if (!c) return { text: 'arne debug: no main response yet.' }
+        const warm = (['S', 'M', 'L'] as Tier[])
+          .map(t => `${MODEL[t]} ${(c.warmUntil[t] ?? 0) > now ? `warm ${mmss(c.warmUntil[t]! - now)}` : 'cold'}`)
+          .join(', ')
+        return { text: `arne debug: ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. paused ${paused}.` }
+      }
       default:
         return {
-          text: `arne ${s.enabled ? 'on' : 'off'}, backend ${s.backend}${s.pin ? `, pinned ${s.pin.tier}` : ''}. Subcommands: on, off, pin, unpin, why, log, backend.`,
+          text: `arne ${s.enabled ? 'on' : 'off'}, backend ${s.backend}${s.pin ? `, pinned ${s.pin.tier}` : ''}. Subcommands: on, off, pin, unpin, why, log, backend, debug.`,
         }
     }
   })
@@ -163,7 +194,6 @@ export const register: Register = on => {
     }
 
     if (e.agentId === undefined) {
-      turnNo += 1
       const model = await $.session.model()
       // A model the user set by hand (/model) pauses arne. arne never sets the session model itself.
       if (baseline !== undefined && model !== baseline) paused = true
@@ -202,17 +232,20 @@ export const register: Register = on => {
   })
 
   on('turn.step', async function* ($, e, next) {
-    const decision = e.agentId === undefined ? current : agents.get(e.agentId)
-    if (!decision) return yield* next(e)
+    const isMain = e.agentId === undefined
+    const decision = isMain ? current : agents.get(e.agentId!)
 
     // Haiku takes no effort setting.
-    const routed = { ...e, model: MODEL[decision.tier], effort: decision.tier === 'S' ? undefined : decision.effort }
-    if (e.agentId === undefined) {
-      $.ui.status(`arne ${decision.source} · ${routed.model} · ${routed.effort}`)
-    }
+    const routed = decision
+      ? { ...e, model: MODEL[decision.tier], effort: decision.tier === 'S' ? undefined : decision.effort }
+      : e
+    if (isMain && decision) $.ui.status(`arne ${decision.source} · ${routed.model} · ${routed.effort ?? '-'}`)
 
     const r = yield* next(routed)
-    const key = e.agentId === undefined ? e.turnId : `${e.turnId}:${e.agentId}`
+    if (isMain) await cacheTouched($, routed.model, r.usage)
+    if (!decision) return r
+
+    const key = isMain ? e.turnId : `${e.turnId}:${e.agentId}`
     const out = r.usage?.output_tokens ?? 0
     const cacheRead = r.usage?.cache_read_input_tokens ?? 0
     const bump = (row: Row): Row =>
@@ -225,12 +258,16 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const l = await read($, last)
-    if (!l) return next(e)
+    const c = await read($, cache)
+    if (!l && !c) return next(e)
+    const now = await read($, clockNow)
+    const left = c ? (c.warmUntil[c.model] ?? 0) - now : 0
     const { Box, Text } = $.ui.resolve(e)
     return (
       <Box>
         <Text dimColor>
-          arne: {l.model} · {l.effort} ({l.source})
+          arne: {l ? `${l.model} · ${l.effort} (${l.source})` : 'not routing'}
+          {c ? ` · cache ${left > 0 ? mmss(left) : 'cold'} · ${Math.round(c.C / 1000)}k` : ''}
         </Text>
       </Box>
     )

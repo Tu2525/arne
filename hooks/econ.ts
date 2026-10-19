@@ -52,3 +52,54 @@ export function coldAdvice(
 
 /** Units to dollars: Sonnet 5.5 input is $3 per million tokens. ponytail: fixed rate, read real prices if they change. */
 export const dollars = (units: number) => (units * 3) / 1e6
+
+// --- Cache clock helpers (ported from effortless cacheTtlOf / mostlyCached) ---
+
+export const CACHE_TTL = { '5m': 5 * 60_000, '1h': 60 * 60_000 } as const
+export type Ttl = keyof typeof CACHE_TTL
+type Usage = {
+  input_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_creation?: { ephemeral_1h_input_tokens?: number; ephemeral_5m_input_tokens?: number }
+}
+
+/** The cache lifetime a response's writes got, when it says. */
+export function cacheTtlOf(usage: unknown): Ttl | undefined {
+  const c = (usage as Usage | null)?.cache_creation
+  if ((c?.ephemeral_1h_input_tokens ?? 0) > 0) return '1h'
+  if ((c?.ephemeral_5m_input_tokens ?? 0) > 0) return '5m'
+  return undefined
+}
+
+/** Most of the prompt came from the cache: it was still warm. */
+export function mostlyCached(usage: unknown): boolean {
+  const u = (usage ?? {}) as Usage
+  const r = u.cache_read_input_tokens ?? 0
+  const all = r + (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
+  return all > 0 && r / all > 0.5
+}
+
+/** Context size C: everything the request sent. */
+export const contextOf = (usage: unknown) => {
+  const u = (usage ?? {}) as Usage
+  return (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
+}
+
+/**
+ * The TTL after a response. A read back after more than 5 minutes proves 1h; once 1h is seen,
+ * a short 5m tail write never pulls it back down.
+ */
+export function nextTtl(prev: Ttl, usage: unknown, sinceLastMs: number | undefined): Ttl {
+  const seen = cacheTtlOf(usage) ?? (sinceLastMs !== undefined && sinceLastMs > CACHE_TTL['5m'] && mostlyCached(usage) ? '1h' : undefined)
+  if (!seen || (seen === '5m' && prev === '1h' && mostlyCached(usage))) return prev
+  return seen
+}
+
+export const tierOf = (model: string): Tier | undefined =>
+  /haiku/.test(model) ? 'S' : /sonnet/.test(model) ? 'M' : /opus/.test(model) ? 'L' : undefined
+
+export const mmss = (ms: number) => {
+  const s = Math.max(0, Math.ceil(ms / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { coldAdvice, costCompact, costContinue, routeWorth } from './econ'
+import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, routeWorth, tierOf } from './econ'
 
 const near = (got: number, want: number) => expect(Math.abs(got - want) / want <= 0.05).toBe(true)
 
@@ -23,4 +23,16 @@ test('routeWorth: warm 80k Opus to cold Haiku does not pay', () => {
   expect(routeWorth('S', 'L', 80_000, { to: false, inUse: true })).toBe(false)
   expect(routeWorth('S', 'L', 80_000, { to: false, inUse: false })).toBe(true)
   expect(routeWorth('S', 'L', 0, { to: false, inUse: true })).toBe(true)
+})
+
+test('cache clock helpers', () => {
+  expect(cacheTtlOf({ cache_creation: { ephemeral_1h_input_tokens: 5 } })).toBe('1h')
+  expect(cacheTtlOf({})).toBe(undefined)
+  const warmRead = { cache_read_input_tokens: 90, input_tokens: 10 }
+  expect(nextTtl('5m', warmRead, 10 * 60_000)).toBe('1h')
+  expect(nextTtl('1h', { ...warmRead, cache_creation: { ephemeral_5m_input_tokens: 3 } }, 1000)).toBe('1h')
+  expect(contextOf({ input_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 3 })).toBe(6)
+  expect(tierOf('claude-sonnet-5-5')).toBe('M')
+  expect(mmss(60 * 60_000)).toBe('60:00')
+  expect(mmss(61_500)).toBe('1:02')
 })

@@ -8,8 +8,15 @@ export type Row = {
   cacheRead: number // cache-read input tokens, summed
 }
 
+export type Cache = {
+  ttl: '5m' | '1h'
+  C: number // context tokens of the last main response
+  model: 'S' | 'M' | 'L' // the tier that answered last
+  warmUntil: Partial<Record<'S' | 'M' | 'L', number>> // epoch ms, per tier
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    arne: { last: Row | null; log: Row[] }
+    arne: { last: Row | null; log: Row[]; cache: Cache | null; now: number }
   }
 }
