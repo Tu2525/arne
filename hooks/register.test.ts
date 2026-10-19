@@ -58,6 +58,22 @@ test('a model move runs the real /model first, then sends the prompt exactly onc
   expect(s.sent).toEqual(['claude-haiku-5-5'])
 })
 
+test('an effort change runs the native /effort first, once, and not again while it matches (17c)', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  await $.command.run({ command: 'arne', args: 'pin opus high' })
+  await clock.settle()
+  s.ran.length = 0
+  const r = await $.prompt.submit(typed('refactor the parser'))
+  expect('drop' in r && r.drop !== undefined).toBe(true)
+  await clock.settle()
+  expect(s.ran).toEqual(['/effort high'])
+  expect(s.entered).toEqual(['refactor the parser'])
+  // Native effort now matches: the next prompt goes straight through.
+  const r2 = await $.prompt.submit(typed('and the lexer'))
+  expect('drop' in r2).toBe(false)
+  expect(s.ran).toEqual(['/effort high'])
+})
+
 test('a cold, big chat holds the prompt; Send anyway sends it once, however often it is pressed (17a)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
   // One 50k-token answer on Opus, then two hours: the cache is cold and the chat is past coldTokens.

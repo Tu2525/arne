@@ -371,10 +371,25 @@ async function switchTarget($: any, d: Decision): Promise<string | undefined> {
   return plan.why === 'sticky' ? undefined : MODEL[d.tier]
 }
 
-// Runs the real /model, then sends the dropped prompt once, whether or not the switch worked.
-async function switchThenSend($: any, target: string, text: string) {
+// The effort the native /effort should move to before this prompt, or undefined to stay. Haiku takes
+// none, and while effortless is on the effort is its to set.
+async function effortTarget($: any, d: Decision, model: string): Promise<Decision['effort'] | undefined> {
+  if (tierOf(model) === 'S' || (await read($, effortless))) return undefined
+  return d.effort === (await read($, appEffort)) ? undefined : d.effort
+}
+
+// Runs the real /model and /effort, then sends the dropped prompt once, whether or not they worked.
+async function switchThenSend($: any, target: string | undefined, effort: Decision['effort'] | undefined, text: string) {
   // The person may have picked a model while this waited: theirs stands.
-  if ((await modeOf($)) === 'on') {
+  if ((await modeOf($)) === 'on' && effort) {
+    try {
+      await $.command.run({ command: 'effort', args: effort })
+      await update($, appEffort, () => effort)
+    } catch {
+      $.ui.toast(`arne: could not set /effort to ${effort}`)
+    }
+  }
+  if ((await modeOf($)) === 'on' && target) {
     const was = expected
     expected = target
     switching = true
@@ -397,7 +412,8 @@ async function routeAndSend($: any, text: string) {
   const d = await decideMain($, text)
   if (d) planned.set(text, d)
   const target = d && (await switchTarget($, d))
-  if (target) await switchThenSend($, target, text)
+  const effort = d && (await effortTarget($, d, target ?? (await $.session.model())))
+  if (target || effort) await switchThenSend($, target, effort, text)
   else await sendAsUser($, text)
 }
 
@@ -546,9 +562,11 @@ export const register: Register = (on, options) => {
     const d = await decideMain($, e.text).finally(() => update($, routing, () => false))
     if (d) planned.set(e.text, d)
     const target = d && (await switchTarget($, d))
-    if (!target) return next(e)
-    $.clock.after(0, () => switchThenSend($, target, e.text))
-    return { drop: `arne: switching to ${shortModel(target)} first; your message follows.` }
+    const effort = d && (await effortTarget($, d, target ?? (await $.session.model())))
+    if (!target && !effort) return next(e)
+    $.clock.after(0, () => switchThenSend($, target, effort, e.text))
+    const to = [target && shortModel(target), effort].filter(Boolean).join(' · ')
+    return { drop: `arne: switching to ${to} first; your message follows.` }
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'arne' }, async ($, e) => {
