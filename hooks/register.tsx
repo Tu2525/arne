@@ -58,6 +58,9 @@ const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
 // The band's two expandable parts: the last decision's reason (why) and the cache's cold advice.
 const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
 const cacheOpen = atom({ plugin: 'arne', key: 'cacheOpen' } as const, false)
+// What the desktop app's model picker shows: the session's first model, then each pick made in it
+// (PostModelSwitch source "sdk"). Plugins cannot move that picker, so arne's /model can differ from it.
+const appPicker = atom({ plugin: 'arne', key: 'appPicker' } as const, null)
 const TIER_NAME_OF: Record<Tier, string> = { S: 'haiku', M: 'sonnet', L: 'opus' }
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
 
@@ -204,13 +207,15 @@ async function toggleAuto($: any) {
 }
 
 // Sets one part of the pin and keeps the other; a pin with neither part left is removed. A pin ends a pause.
-async function setPinPart($: any, part: Pin) {
+// A model pin moves the real /model at once, unless the pick already moved it (the app's own picker).
+async function setPinPart($: any, part: Pin, move = true) {
   const next: Pin = { ...((await settings($)).pin ?? {}), ...part }
   if (next.tier === undefined) delete next.tier
   if (next.effort === undefined) delete next.effort
   if (next.tier || next.effort) await $.store.set('pin', next)
   else await $.store.delete('pin')
   await resume($)
+  if (move && part.tier && tierOf(await $.session.model()) !== part.tier) await moveModel($, MODEL[part.tier])
   await showStatus($)
 }
 
@@ -437,6 +442,8 @@ export const register: Register = (on, options) => {
     const eff = await effortlessOn($)
     await update($, effortless, () => eff)
     await update($, isOff, () => !live.auto)
+    const first = await $.session.model()
+    await update($, appPicker, was => was ?? first)
     // Drives the band's countdown. ponytail: a 1s state write; slow it down if redraws ever cost.
     $.clock.every(1000, async () => {
       if ((await read($, cache)) === null) return
@@ -453,8 +460,15 @@ export const register: Register = (on, options) => {
     // ponytail: a manual pick of the tier arne already expects reads as arne's own and does not pause;
     // tell them apart by origin if command.run ever carries one for /model.
     const isOwn = expected !== undefined && tierOf(e.to_model) === tierOf(expected)
-    const byHand = e.source === 'command' || e.source === 'picker' || e.source === 'sdk'
-    if (!isOwn && byHand && !(await read($, isOff))) await update($, isPaused, () => true)
+    // A pick in the desktop app's picker is an input: it pins that tier (📌), not a pause. Auto in the band unpins.
+    if (e.source === 'sdk' && !switching) {
+      await update($, appPicker, () => e.to_model)
+      const tier = tierOf(e.to_model)
+      if (tier) await setPinPart($, { tier }, false)
+    } else {
+      const byHand = e.source === 'command' || e.source === 'picker'
+      if (!isOwn && byHand && !(await read($, isOff))) await update($, isPaused, () => true)
+    }
     expected = e.to_model
     await update($, sessionModel, () => e.to_model)
     await showStatus($)
@@ -546,10 +560,9 @@ export const register: Register = (on, options) => {
         const tier = TIER_OF[rest[0]]
         if (!tier) return { text: 'Usage: /arne pin haiku|sonnet|opus [low|medium|high]' }
         const effort = (rest[1] ?? 'medium') as Decision['effort']
-        await $.store.set('pin', { tier, effort })
-        // A pin is the person's pick made through arne: it ends a pause, so every surface shows the pin.
-        await resume($)
-        await showStatus($)
+        // A pin is the person's pick made through arne: it ends a pause and moves /model now. The move
+        // waits a tick: a /model run from inside this command's own hook is refused.
+        $.clock.after(0, () => setPinPart($, { tier, effort }))
         return { text: `arne pinned to ${rest[0]} · ${effort}.` }
       }
       case 'unpin':
@@ -709,6 +722,8 @@ export const register: Register = (on, options) => {
     const pin = (await settings($)).pin
     const whyIsOpen = await read($, whyOpen)
     const cacheIsOpen = await read($, cacheOpen)
+    const picker = await read($, appPicker)
+    const running = await read($, sessionModel)
     const offer = await coldOffer($, now)
     // The held prompt's two ways out, priced: the compact row and the plain re-warm.
     const priced = (a: 'compact' | 'continue') => {
@@ -754,6 +769,16 @@ export const register: Register = (on, options) => {
         {(band.state === 'cold' || band.state === 'heavy' || band.state === 'paused' || band.state === 'off') && (
           <Text dimColor>arne: {band.text}</Text>
         )}
+        {picker && running && tierOf(picker) !== tierOf(running) && (
+          <Box key="picker-note" hover={{ scope: 'arne-picker' }}>
+            <Text color="subtle">
+              Running {shortModel(running)} · app picker shows {shortModel(picker)}
+            </Text>
+            <Box key="picker-card" position="absolute" top={1} left={0} display="none" hover={{ display: 'flex', scope: 'arne-picker' }}>
+              <Text>Plugins can't move the app's model picker yet; arne's /model is what answers.</Text>
+            </Box>
+          </Box>
+        )}
         <Box flexDirection="row" gap={1}>
           <Button key="auto" variant={mode === 'paused' ? 'primary' : 'secondary'} label={autoLabel} onPress={() => toggleAuto($)} />
           <Box key="pick-model" hover={{ scope: 'arne-pick' }}>
@@ -769,7 +794,7 @@ export const register: Register = (on, options) => {
               value={pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto'}
               onSelect={(value: string) => {
                 const tier = TIER_OF[value]
-                void setPinPart($, { tier }).then(() => (tier ? moveModel($, MODEL[tier]) : undefined))
+                void setPinPart($, { tier })
               }}
             />
             {card('model')}

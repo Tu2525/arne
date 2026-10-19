@@ -102,3 +102,44 @@ test('the band pickers pin a model by one pick, move /model at once, and Auto un
   await settle()
   expect((await $.command.run({ command: 'arne', args: '' })).text).not.toContain('pinned')
 })
+
+test('a pick in the app picker pins that tier instead of pausing, and band Auto unpins it (17f)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'opus', source: 'sdk' })
+  const status = (await $.command.run({ command: 'arne', args: '' })).text
+  expect(status).toContain('arne on')
+  expect(status).toContain('pinned opus')
+  // The app already moved: arne runs no /model of its own for that pick.
+  expect(s.ran).toEqual([])
+
+  await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
+  await $.ui.select({ plugin: 'arne', key: 'model', value: 'auto' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect((await $.command.run({ command: 'arne', args: '' })).text).not.toContain('pinned')
+})
+
+test('the band says so when arne runs a model the app picker does not show (17f)', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  await $.classic.PostModelSwitch({ from_model: 'claude-opus-5-5', to_model: 'claude-sonnet-5-5', requested_model: 'sonnet', source: 'sdk' })
+  const ui = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
+  expect(await ui.find({ type: 'Text', text: /app picker shows/ })).toBeUndefined()
+
+  await $.ui.select({ plugin: 'arne', key: 'model', value: 'opus' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  // arne's own /model, as the app reports it.
+  await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'claude-opus-5-5', source: 'command' })
+  expect(await ui.find({ type: 'Text', text: /Running Opus · app picker shows Sonnet/ })).toBeDefined()
+})
+
+test('a pin from the band or /arne pin moves /model at once, before any prompt (17f)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  await $.command.run({ command: 'arne', args: 'pin opus high' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(s.ran).toEqual(['/model claude-opus-5-5'])
+
+  await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
+  await $.ui.select({ plugin: 'arne', key: 'model', value: 'haiku' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(s.ran.at(-1)).toBe('/model claude-haiku-5-5')
+  expect(s.entered).toEqual([])
+})
