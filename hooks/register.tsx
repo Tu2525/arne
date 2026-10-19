@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, midTask, mmss, nextTtl, planSwitch, shortModel, summaryPrompt, tierOf, WINDOW } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, midTask, mmss, nextTtl, planSwitch, shortModel, summaryPrompt, tierOf, WINDOW, PRICE, OUT, READ } from './econ'
 import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
@@ -73,7 +73,7 @@ const effortless = atom({ plugin: 'arne', key: 'effortless' } as const, false)
 const EFFORTLESS = 'effortless@effortless'
 const SETTINGS_FILE = '.claude/settings.json' // under the home directory, same as LOG_FILE
 const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
-// The band's why row: the last decision's reason, the cold-cache costs and 👍/👎.
+// True while the band's panel is open (model, effort, why, settings).
 const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
 // What the desktop app's model picker shows: the session's first model, then each pick made in it
 // (PostModelSwitch source "sdk"). Plugins cannot move that picker, so arne's /model can differ from it.
@@ -251,20 +251,14 @@ async function moveModel($: any, target: string) {
   }
 }
 
-// Reason and tokens of the last main decision, for the band's why row and its hover card.
-function whyText(l: Row | null, pinned: boolean) {
-  if (!l) return 'No decision yet.'
-  return `${pinned ? 'You pinned it. ' : ''}${shortModel(l.model)} · ${l.effort}: ${l.reason} (${l.source}) · out ${l.out} tokens`
-}
-
-// 👍 / 👎 on the last decision: a correction label for the classifier, written beside the log rows.
+// Good call / Wrong call on the last decision: a correction label for the classifier, written beside the log rows.
 async function feedback($: any, verdict: 'up' | 'down') {
   const l = await read($, last)
   if (!l) return
   try {
     const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
     await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify({ type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }) + '\n')
-    $.ui.toast(`arne: noted ${verdict === 'up' ? '👍' : '👎'} for the last decision`)
+    $.ui.toast(`arne: noted ${verdict === 'up' ? 'good call' : 'wrong call'}`)
   } catch {
     $.ui.toast('arne: could not log that feedback')
   }
@@ -477,7 +471,7 @@ export const register: Register = (on, options) => {
     // ponytail: a manual pick of the tier arne already expects reads as arne's own and does not pause;
     // tell them apart by origin if command.run ever carries one for /model.
     const isOwn = expected !== undefined && tierOf(e.to_model) === tierOf(expected)
-    // A pick in the desktop app's picker is an input: it pins that tier (📌), not a pause. Auto in the band unpins.
+    // A pick in the desktop app's picker is an input: it pins that tier, not a pause. Auto in the band's panel unpins.
     if (e.source === 'sdk' && !switching) {
       await update($, appPicker, () => e.to_model)
       const tier = tierOf(e.to_model)
@@ -770,37 +764,87 @@ export const register: Register = (on, options) => {
           C: c?.C ?? 0,
           heavyTokens: live.heavyTokens,
         })
-    // One quiet line at rest, read like Claude's own footer: Auto, model, effort, cache, why, settings.
-    // Labels keep their width across states; a state that needs words gets its own line above.
-    const autoLabel = mode === 'on' ? '● Auto' : '○ Auto'
-    const shownModel = shortModel(band.state === 'routing' ? running ?? MODEL.M : appModel ?? (l ? l.model : running ?? MODEL.M))
-    const shownEffort = (mode === 'on' ? l?.effort : await read($, appEffort)) ?? '-'
-    const modelOptions = pin?.tier
-      ? [{ value: 'auto', label: 'Auto' }, ...(['haiku', 'sonnet', 'opus'] as const).map(v => ({ value: v, label: v[0].toUpperCase() + v.slice(1) }))]
-      : [{ value: 'auto', label: shownModel }, ...(['haiku', 'sonnet', 'opus'] as const).map(v => ({ value: v, label: `Pin ${v[0].toUpperCase() + v.slice(1)}` }))]
-    const effortOptions = pin?.effort
-      ? [{ value: 'auto', label: 'Auto' }, ...(['low', 'medium', 'high'] as const).map(v => ({ value: v, label: v }))]
-      : [{ value: 'auto', label: shownEffort }, ...(['low', 'medium', 'high'] as const).map(v => ({ value: v, label: `Pin ${v}` }))]
-    const card = (key: string) => (
-      <Box key={`card-${key}`} position="absolute" top={1} left={0} display="none" hover={{ display: 'flex', scope: 'arne-pick' }}>
-        <Text color="subtle">{whyText(l, Boolean(pin))}</Text>
+    // At rest the band is one pressable line, read like Claude's limit banner: the arne mark, model and
+    // effort, the reason, and the cache on the right. Pressing it opens a small panel under it.
+    // Model and effort words keep a fixed width, so nothing moves sideways between turns.
+    const open = whyIsOpen // the whyOpen atom now holds "panel open"
+    const toggle = () => update($, whyOpen, o => !o)
+    const runModel = appModel ?? (l ? l.model : running ?? MODEL.M)
+    const modelWord = shortModel(runModel)
+    const effortWord = tierOf(runModel) === 'S' ? '' : ((mode === 'on' ? l?.effort : await read($, appEffort)) ?? '')
+    const reason = band.state === 'routing' ? 'routing…' : l ? (l.reason.length > 28 ? `${l.reason.slice(0, 27)}…` : l.reason) : ''
+    const minutes = Math.ceil(left / 60_000)
+    const cacheWords = c ? `cache ${left > 0 ? `${minutes}m` : 'cold'} · ${Math.round((c.C / WINDOW) * 100)}% full` : ''
+    const cool = left > 0 && left < 5 * 60_000
+    // What the last turn cost: its output and cache reads at the tier's price. ponytail: leaves out uncached input.
+    const lastTier = l ? tierOf(l.model) : undefined
+    const lastCost = l && lastTier ? dollars(PRICE[lastTier] * (l.out * OUT + l.cacheRead * READ)) : 0
+    const segment = (key: string, options: { value: string; label: string }[], active: string, pick: (v: string) => void) =>
+      options.map(o => (
+        <Button key={`${key}-${o.value}`} variant={o.value === active ? 'primary' : 'secondary'} label={o.label} onPress={() => pick(o.value)} />
+      ))
+    // A banner alert: a bold title, the detail in subtle, actions on the right.
+    const banner = (key: string, title: string, detail: string, actions: unknown) => (
+      <Box key={key} flexDirection="row" justifyContent="space-between" gap={1}>
+        <Box gap={1}>
+          <Text bold>{title}</Text>
+          <Text color="subtle">{detail}</Text>
+        </Box>
+        <Box gap={1}>{actions as any}</Box>
       </Box>
     )
-    const cool = left > 0 && left < 5 * 60_000
-    const cacheText = c ? `cache ${left > 0 ? mmss(left) : 'cold'} · ◔ ${Math.round(((c.C ?? 0) / WINDOW) * 100)}%` : ''
-    const costRows = whyIsOpen && c ? coldAdvice(c.C, c.model, c.warmUntil, now).rows : []
-    // Alerts name arne; the resting line does not.
-    const alert =
-      band.state === 'paused'
-        ? `arne paused: you picked ${appModel ? shortModel(appModel) : 'a model'}. Auto resumes routing.`
-        : band.state === 'off'
-          ? 'arne off: requests use the session model.'
-          : band.state === 'cold' || band.state === 'heavy'
-            ? `arne: ${band.text}`
-            : undefined
+    const k = (n: number) => `${Math.round(n / 1000)}k`
     return (
       <Box flexDirection="column">
-        {alert && <Text color={band.state === 'cold' || band.state === 'heavy' ? 'warning' : 'subtle'}>{alert}</Text>}
+        {effortOn &&
+          banner(
+            'alert-effortless',
+            'effortless is on',
+            'it sets effort too; disable it and restart',
+            <Button key="disable-effortless" variant="primary" label="Disable effortless" onPress={() => disableEffortless($)} />,
+          )}
+        {heldText &&
+          offer &&
+          banner(
+            'alert-held',
+            `Cache expired on a ${k(offer.c.C)} chat`,
+            'your message is waiting',
+            [
+              <Button key="compact-send" variant="primary" label={`Compact & send${priced('compact')}`} onPress={() => compactAndSend($)} />,
+              <Button key="send-anyway" variant="secondary" label={`Send anyway${priced('continue')}`} onPress={() => sendAnyway($)} />,
+            ],
+          )}
+        {heldText &&
+          !offer &&
+          banner(
+            'alert-held',
+            'Cache expired',
+            'your message is waiting',
+            [
+              <Button key="compact-send" variant="primary" label="Compact & send" onPress={() => compactAndSend($)} />,
+              <Button key="send-anyway" variant="secondary" label="Send anyway" onPress={() => sendAnyway($)} />,
+            ],
+          )}
+        {offer &&
+          !heldText &&
+          banner(
+            'alert-cold',
+            `Cache expired on a ${k(offer.c.C)} chat`,
+            `next message ${priced('continue').replace(' · ', '') || 'costs more'}; compacting first ${priced('compact').replace(' · ', '')}`,
+            [
+              <Button key="compact" variant={offer.best.action === 'compact' ? 'primary' : 'secondary'} label="Compact" onPress={() => compactNow($, '')} />,
+              <Button key="continue" role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
+            ],
+          )}
+        {band.state === 'heavy' &&
+          c &&
+          !offer &&
+          banner(
+            'alert-heavy',
+            `Chat is ${k(c.C)} tokens`,
+            `${Math.round((c.C / WINDOW) * 100)}% full; compacting keeps turns cheap`,
+            <Button key="compact" variant="secondary" label="Compact" onPress={() => compactNow($, '')} />,
+          )}
         {picker && running && tierOf(picker) !== tierOf(running) && (
           <Box key="picker-note" hover={{ scope: 'arne-picker' }}>
             <Text color="subtle">
@@ -811,81 +855,72 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
         )}
-        <Box flexDirection="row" gap={1} alignItems="center">
-          <Button key="auto" variant="secondary" label={autoLabel} onPress={() => toggleAuto($)} />
-          <Box key="pick-model" hover={{ scope: 'arne-pick' }}>
-            <Select
-              key="model"
-              label={pin?.tier ? '📌' : undefined}
-              options={modelOptions}
-              value={pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto'}
-              onSelect={(value: string) => void setPinPart($, { tier: TIER_OF[value] })}
-            />
-            {card('model')}
+        {mode === 'paused' ? (
+          <Box flexDirection="row" gap={1}>
+            <Text color="claude">arne</Text>
+            <Text color="subtle">paused · you picked {appModel ? shortModel(appModel) : 'a model'}</Text>
+            <Button key="auto" plain label="Resume" onPress={() => toggleAuto($)} />
           </Box>
-          <Box key="pick-effort" hover={{ scope: 'arne-pick' }}>
-            <Select
-              key="effort"
-              label={pin?.effort ? '📌' : undefined}
-              options={effortOptions}
-              value={pin?.effort ?? 'auto'}
-              onSelect={(value: string) => void setPinPart($, { effort: value === 'auto' ? undefined : (value as Pin['effort']) })}
-            />
-            {card('effort')}
+        ) : mode === 'off' ? (
+          <Box flexDirection="row" gap={1}>
+            <Text color="claude">arne</Text>
+            <Text color="subtle">off</Text>
+            <Button key="auto" plain label="Turn on" onPress={() => toggleAuto($)} />
           </Box>
-          {band.state === 'routing' ? (
-            <Text color="subtle">routing…</Text>
-          ) : (
-            cacheText && <Text color={cool ? 'warning' : 'subtle'}>{cacheText}</Text>
-          )}
-          <Button key="why" variant="secondary" label={whyIsOpen ? 'Hide why' : 'Why'} onPress={() => update($, whyOpen, o => !o)} />
-          <Button key="gear" variant="secondary" label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
-        </Box>
-        {whyIsOpen && (
+        ) : (
+          <Box flexDirection="row" justifyContent="space-between">
+            <Button key="band" plain label={open ? 'Close arne panel' : 'Open arne panel'} onPress={toggle}>
+              <Text color="claude">arne</Text>
+              {'  '}
+              {l || band.state === 'routing'
+                ? [
+                    <Text key="m">{modelWord.padEnd(6)}</Text>,
+                    <Text key="e" color="subtle">{effortWord ? ` · ${effortWord.padEnd(6)}` : ' '.repeat(9)}</Text>,
+                    <Text key="r" color="inactive">{`  ${reason}`}</Text>,
+                  ]
+                : <Text color="subtle">auto</Text>}
+            </Button>
+            {cacheWords && (
+              <Button key="band-cache" plain label={cacheWords} dimColor={!cool} onPress={toggle}>
+                <Text color={cool ? 'warning' : 'subtle'}>{cacheWords}</Text>
+              </Button>
+            )}
+          </Box>
+        )}
+        {open && mode === 'on' && (
           <Box flexDirection="column">
-            <Text color="subtle">{whyText(l, Boolean(pin))}</Text>
-            {costRows.slice(0, 3).map(row => (
-              <Text key={`cost-${row.action}-${row.to ?? ''}`} color="inactive">
-                {rowLabel(row)}: ${dollars(row.first).toFixed(3)}
-              </Text>
-            ))}
-            <Box gap={1}>
-              <Button key="up" variant="secondary" label="👍 Right call" onPress={() => feedback($, 'up')} />
-              <Button key="down" variant="secondary" label="👎 Wrong call" onPress={() => feedback($, 'down')} />
+            <Box flexDirection="row" gap={1}>
+              <Text color="subtle">Model </Text>
+              {segment(
+                'model',
+                [{ value: 'auto', label: `Auto (${modelWord})` }, ...(['haiku', 'sonnet', 'opus'] as const).map(v => ({ value: v, label: v[0].toUpperCase() + v.slice(1) }))],
+                pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto',
+                v => void setPinPart($, { tier: TIER_OF[v] }),
+              )}
+              {pin?.tier && <Text color="subtle">pinned</Text>}
             </Box>
-          </Box>
-        )}
-        {effortOn && (
-          <Box flexDirection="column">
-            <Text color="subtle">arne: effortless is on and sets effort too. Disable it and restart so arne can.</Text>
-            <Button key="disable-effortless" variant="secondary" label="Disable effortless" onPress={() => disableEffortless($)} />
-          </Box>
-        )}
-        {heldText && (
-          <Box flexDirection="column">
-            <Text>arne held your message: the cache is cold, so compacting first costs less.</Text>
-            <Box gap={1}>
-              <Button key="compact-send" variant="primary" label={`Compact & send${priced('compact')}`} onPress={() => compactAndSend($)} />
-              <Button key="send-anyway" variant="secondary" label={`Send anyway${priced('continue')}`} onPress={() => sendAnyway($)} />
+            <Box flexDirection="row" gap={1}>
+              <Text color="subtle">Effort</Text>
+              {segment(
+                'effort',
+                [{ value: 'auto', label: effortWord ? `Auto (${effortWord})` : 'Auto' }, ...(['low', 'medium', 'high'] as const).map(v => ({ value: v, label: v }))],
+                pin?.effort ?? 'auto',
+                v => void setPinPart($, { effort: v === 'auto' ? undefined : (v as Pin['effort']) }),
+              )}
+              {pin?.effort && <Text color="subtle">pinned</Text>}
             </Box>
-          </Box>
-        )}
-        {offer && !heldText && (
-          <Box flexDirection="column">
-            <Text>arne: the cache is cold on a {Math.round(offer.c.C / 1000)}k chat. Cost of the next message:</Text>
-            {offer.rows.slice(0, 3).map(row => (
-              <Text key={`${row.action}-${row.to ?? ''}`} color="inactive">
-                {rowLabel(row)}: ${dollars(row.first).toFixed(3)}
-              </Text>
-            ))}
-            <Box gap={1}>
-              <Button key="compact" variant={offer.best.action === 'compact' ? 'primary' : 'secondary'} label="Compact" onPress={() => compactNow($, '')} />
-              <Button
-                key="continue"
-                variant={offer.best.action === 'compact' ? 'secondary' : 'primary'}
-                label="Continue"
-                onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)}
-              />
+            {l && (
+              <Box flexDirection="row" gap={1}>
+                <Text color="subtle">
+                  Why  {l.reason} ({l.source}) · last turn ${lastCost.toFixed(3)}
+                </Text>
+                <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
+                <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
+              </Box>
+            )}
+            <Box flexDirection="row" gap={2}>
+              <Button key="auto" plain dimColor label="Turn off arne" onPress={() => toggleAuto($)} />
+              <Button key="gear" plain dimColor label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
             </Box>
           </Box>
         )}

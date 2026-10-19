@@ -24,6 +24,15 @@ function engine(on: any, start = 'claude-opus-5-5') {
   return { s, clock }
 }
 
+// A pick in the band's panel: open it with a press on the line if it is closed, then press the segment.
+async function pick($: any, row: string, value: string) {
+  const press = () => $.ui.press({ plugin: 'arne', key: `${row}-${value}` })
+  await press().catch(async () => {
+    await $.ui.press({ plugin: 'arne', key: 'band' })
+    await press()
+  })
+}
+
 const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
 
 test('a model move runs the real /model first, then sends the prompt exactly once (17c)', async ($: any, on: any) => {
@@ -87,18 +96,18 @@ test('the band pickers pin a model by one pick, move /model at once, and Auto un
   const settle = async () => {
     for (let i = 0; i < 3; i++) await clock.settle()
   }
-  await $.ui.select({ plugin: 'arne', key: 'model', value: 'haiku' })
+  await pick($, 'model', 'haiku')
   await settle()
   expect(s.ran).toEqual(['/model claude-haiku-5-5'])
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned haiku')
 
   // Effort alone: the model pin stays, and the prompt is routed with the pinned tier.
-  await $.ui.select({ plugin: 'arne', key: 'effort', value: 'high' })
+  await pick($, 'effort', 'high')
   await settle()
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned haiku · high')
 
-  await $.ui.select({ plugin: 'arne', key: 'model', value: 'auto' })
-  await $.ui.select({ plugin: 'arne', key: 'effort', value: 'auto' })
+  await pick($, 'model', 'auto')
+  await pick($, 'effort', 'auto')
   await settle()
   expect((await $.command.run({ command: 'arne', args: '' })).text).not.toContain('pinned')
 })
@@ -113,7 +122,7 @@ test('a pick in the app picker pins that tier instead of pausing, and band Auto 
   expect(s.ran).toEqual([])
 
   await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
-  await $.ui.select({ plugin: 'arne', key: 'model', value: 'auto' })
+  await pick($, 'model', 'auto')
   for (let i = 0; i < 3; i++) await clock.settle()
   expect((await $.command.run({ command: 'arne', args: '' })).text).not.toContain('pinned')
 })
@@ -124,7 +133,7 @@ test('the band says so when arne runs a model the app picker does not show (17f)
   const ui = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
   expect(await ui.find({ type: 'Text', text: /app picker shows/ })).toBeUndefined()
 
-  await $.ui.select({ plugin: 'arne', key: 'model', value: 'opus' })
+  await pick($, 'model', 'opus')
   for (let i = 0; i < 3; i++) await clock.settle()
   // arne's own /model, as the app reports it.
   await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'claude-opus-5-5', source: 'command' })
@@ -138,19 +147,19 @@ test('a pin from the band or /arne pin moves /model at once, before any prompt (
   expect(s.ran).toEqual(['/model claude-opus-5-5'])
 
   await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
-  await $.ui.select({ plugin: 'arne', key: 'model', value: 'haiku' })
+  await pick($, 'model', 'haiku')
   for (let i = 0; i < 3; i++) await clock.settle()
   expect(s.ran.at(-1)).toBe('/model claude-haiku-5-5')
   expect(s.entered).toEqual([])
 })
 
-test('the band names arne only in alerts, and the settings pane is grouped like /config (17b)', async ($: any, on: any) => {
+test('the band never prefixes "arne:", says off in words, and the settings pane is grouped like /config (17b)', async ($: any, on: any) => {
   engine(on, 'claude-sonnet-5-5')
   on('config.set', (_$: unknown, e: { value: unknown }) => ({ value: e.value }))
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
-  expect(await band.find({ type: 'Text', text: /arne/ })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /arne:/ })).toBeUndefined()
   await $.command.run({ command: 'arne', args: 'off' })
-  expect(await band.find({ type: 'Text', text: /^arne off/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'off' })).toBeDefined()
 
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', props: {}, requestId: 'arne-settings', viewport: { columns: 80, rows: 30 } })
   for (const group of ['Routing', 'Models', 'Cache & compact']) expect(await pane.find({ type: 'Text', text: group })).toBeDefined()
