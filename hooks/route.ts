@@ -1,5 +1,5 @@
 export type Tier = 'S' | 'M' | 'L'
-export type Effort = 'low' | 'medium' | 'high'
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Verdict = { tier: Tier; effort: Effort; reason: string }
 export type Decision = Verdict & { source: string }
 export type Backend = { name: string; ask: (text: string) => Promise<Verdict | undefined> }

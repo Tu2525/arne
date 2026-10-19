@@ -81,4 +81,6 @@ test('clamps keep tiers and efforts inside the floor and ceiling', () => {
   expect(clampTier('M', 'haiku', 'opus')).toBe('M')
   expect(clampEffort('low', 'medium', 'high')).toBe('medium')
   expect(clampEffort('max', 'low', 'high')).toBe('high')
+  expect(clampEffort('max', 'low', 'max')).toBe('max')
+  expect(clampEffort('xhigh', 'low', 'high')).toBe('high')
 })

@@ -1,6 +1,8 @@
 import type { Tier, Effort, Verdict } from './route'
 
 const TIERS: Tier[] = ['S', 'M', 'L']
+// ponytail: the judge never picks above high. xhigh and max are reached only by a pin or a floor, so a
+// judge's answer cannot raise the cost of a turn past what the person allowed.
 const EFFORTS: Effort[] = ['low', 'medium', 'high']
 
 export const SYSTEM = `You route a coding-assistant prompt to a model tier. Reply with JSON only:

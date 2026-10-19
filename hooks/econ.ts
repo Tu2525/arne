@@ -182,7 +182,7 @@ export function bandText(i: BandInput): { state: BandState; text: string; short:
 
 const TIER_NAME: Record<string, Tier> = { haiku: 'S', sonnet: 'M', opus: 'L' }
 const TIER_RANK: Record<Tier, number> = { S: 0, M: 1, L: 2 }
-const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
+export const EFFORT_RANK: Record<string, number> ={ low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
 
 /** A tier kept between the floor and ceiling model names (haiku|sonnet|opus). */
 export function clampTier(tier: Tier, floor: string, ceiling: string): Tier {

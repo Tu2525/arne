@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, midTask, mmss, nextTtl, planSwitch, shortModel, summaryPrompt, tierOf, WINDOW, PRICE, OUT, READ } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, EFFORT_RANK, midTask, mmss, nextTtl, planSwitch, shortModel, summaryPrompt, tierOf, WINDOW, PRICE, OUT, READ } from './econ'
 import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
@@ -20,38 +20,6 @@ async function homePath($: any, p: string): Promise<string> {
 const PANE = 'arne-log'
 const SETTINGS = 'arne-settings'
 
-// What each row cycles through in the ⚙ pane: options for a string, a step for a number, a flip for a boolean.
-const CHOICES: Partial<Record<keyof Live, unknown[]>> = {
-  backend: ['haiku', 'heuristic', 'laya'],
-  modelFloor: ['haiku', 'sonnet', 'opus'],
-  modelCeiling: ['haiku', 'sonnet', 'opus'],
-  effortFloor: ['low', 'medium', 'high'],
-  effortCeiling: ['low', 'medium', 'high'],
-  compactModel: ['haiku', 'sonnet'],
-}
-const STEP: Partial<Record<keyof Live, number[]>> = {
-  coldTokens: [15_000, 30_000, 60_000],
-  heavyTokens: [100_000, 150_000, 200_000],
-}
-// The settings pane's groups and row names, worded as plugin.json's titles so /config reads the same.
-const TITLE: Record<keyof Live, string> = {
-  auto: 'Auto routing',
-  backend: 'Classifier',
-  modelFloor: 'Lowest model',
-  modelCeiling: 'Highest model',
-  effortFloor: 'Lowest effort',
-  effortCeiling: 'Highest effort',
-  compactModel: 'Compaction model',
-  coldTokens: 'Cold offer above',
-  heavyTokens: 'Heavy warning above',
-  continueAfterCompact: 'Continue after /compact',
-}
-const GROUPS: { name: string; about: string; keys: (keyof Live)[] }[] = [
-  { name: 'Routing', about: 'Who picks the model and effort for each prompt.', keys: ['auto', 'backend'] },
-  { name: 'Models', about: 'The range arne routes within.', keys: ['modelFloor', 'modelCeiling', 'effortFloor', 'effortCeiling'] },
-  { name: 'Cache & compact', about: 'What arne offers when the cache goes cold or the chat grows big.', keys: ['compactModel', 'coldTokens', 'heavyTokens', 'continueAfterCompact'] },
-]
-const nextOf = <T,>(list: T[], v: T): T => list[(list.indexOf(v) + 1) % list.length]
 const TIER_OF: Record<string, Tier> = { haiku: 'S', sonnet: 'M', opus: 'L' }
 
 const last = atom({ plugin: 'arne', key: 'last' } as const, null)
@@ -75,6 +43,10 @@ const SETTINGS_FILE = '.claude/settings.json' // under the home directory, same 
 const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
 // True while the band's panel is open (model, effort, why, settings).
 const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
+// The decision key the person just rated; the panel then says it logged the rating.
+const thanked = atom({ plugin: 'arne', key: 'thanked' } as const, null as string | null)
+// True while Laya is the judge but laya-serve is not answering; the why line then says Haiku judged.
+const layaDown = atom({ plugin: 'arne', key: 'layaDown' } as const, false)
 // What the desktop app's model picker shows: the session's first model, then each pick made in it
 // (PostModelSwitch source "sdk"). Plugins cannot move that picker, so arne's /model can differ from it.
 const appPicker = atom({ plugin: 'arne', key: 'appPicker' } as const, null)
@@ -258,7 +230,7 @@ async function feedback($: any, verdict: 'up' | 'down') {
   try {
     const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
     await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify({ type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }) + '\n')
-    $.ui.toast(`arne: noted ${verdict === 'up' ? 'good call' : 'wrong call'}`)
+    await update($, thanked, () => l.key)
   } catch {
     $.ui.toast('arne: could not log that feedback')
   }
@@ -304,7 +276,8 @@ async function startLaya($: any) {
       // output is not read; the server logs go to its own console
     }
   } catch {
-    // laya not installed, or the server exited
+    // laya not installed, or the server exited: the why line says Haiku judged until it answers
+    $.ui.toast('arne: laya-serve did not start (not on PATH?). Haiku judges until it does.')
   } finally {
     layaStarting = false
   }
@@ -344,6 +317,8 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
     layaUp = await layaHealthy($)
     if (!layaUp) void startLaya($)
   }
+  // The band says so when Laya was picked but is not answering: the chain judges with Haiku instead.
+  await update($, layaDown, () => s.backend === 'laya' && !layaUp)
   // A hard pin (tier and effort) skips routing; a partial pin keeps routing for the part it leaves out.
   const pin = s.pin ?? undefined
   const hard = pin?.tier && pin.effort ? { tier: pin.tier, effort: pin.effort } : undefined
@@ -352,7 +327,8 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
   const d = {
     ...r,
     tier: clampTier(pin?.tier ?? r.tier, live.modelFloor, live.modelCeiling),
-    effort: clampEffort(pin?.effort ?? r.effort, live.effortFloor, live.effortCeiling),
+    // A pinned effort is the person's own pick, so it skips the ceiling: that is how xhigh and max are reached.
+    effort: pin?.effort ?? clampEffort(r.effort, live.effortFloor, live.effortCeiling),
     // Only a model pin is a pin for switching: it moves the real /model like any pin did.
     source: pin?.tier ? 'pin' : r.source,
   }
@@ -588,7 +564,8 @@ export const register: Register = (on, options) => {
         return { text: 'arne settings opened. Changes here match /config.' }
       case 'pin': {
         const tier = TIER_OF[rest[0]]
-        if (!tier) return { text: 'Usage: /arne pin haiku|sonnet|opus [low|medium|high]' }
+        if (!tier) return { text: 'Usage: /arne pin haiku|sonnet|opus [low|medium|high|xhigh|max]' }
+        if (rest[1] && !(rest[1] in EFFORT_RANK)) return { text: 'Efforts: low, medium, high, xhigh, max.' }
         const effort = (rest[1] ?? 'medium') as Decision['effort']
         // A pin is the person's pick made through arne: it ends a pause and moves /model now. The move
         // waits a tick: a /model run from inside this command's own hook is refused.
@@ -746,11 +723,19 @@ export const register: Register = (on, options) => {
     const picker = await read($, appPicker)
     const running = await read($, sessionModel)
     const offer = await coldOffer($, now)
-    // The held prompt's two ways out, priced: the compact row and the plain re-warm.
-    const priced = (a: 'compact' | 'continue') => {
+    const pinned = Boolean(pin?.tier || pin?.effort)
+    const thankedKey = await read($, thanked)
+    const judgeDown = await read($, layaDown)
+    const cap = (s: string) => s[0].toUpperCase() + s.slice(1)
+    // The cold alert's copy: how long the cache has been cold, and what a summary costs against a plain resend.
+    const money = (a: 'compact' | 'continue') => {
       const row = offer?.rows.find(x => x.action === a)
-      return row ? ` · $${dollars(row.first).toFixed(3)}` : ''
+      return row ? `$${dollars(row.first).toFixed(2)}` : ''
     }
+    const coldAgo = offer ? Math.max(0, Math.round((now - (offer.c.warmUntil[offer.c.model] ?? now)) / 60_000)) : 0
+    const coldLine = offer
+      ? `Cache went cold ${coldAgo >= 60 ? `${Math.round(coldAgo / 60)}h` : `${coldAgo}m`} ago. ${cap(live.compactModel)} summary first costs ${money('compact')} instead of ${money('continue')} to resend.`
+      : 'Cache went cold. Your message is waiting.'
     const effortOn = await read($, effortless)
     const sample: Record<BandState, Parameters<typeof bandText>[0]> = {
       routing: { off: false, paused: false, routing: true, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 0, C: 0 },
@@ -790,177 +775,196 @@ export const register: Register = (on, options) => {
     // What the last turn cost: its output and cache reads at the tier's price. ponytail: leaves out uncached input.
     const lastTier = l ? tierOf(l.model) : undefined
     const lastCost = l && lastTier ? dollars(PRICE[lastTier] * (l.out * OUT + l.cacheRead * READ)) : 0
+    // A segmented group: the selected segment is the raised grey (secondary), the others are plain text.
     const segment = (key: string, options: { value: string; label: string }[], active: string, pick: (v: string) => void) =>
-      options.map(o => (
-        <Button key={`${key}-${o.value}`} variant={o.value === active ? 'primary' : 'secondary'} label={o.label} onPress={() => pick(o.value)} />
-      ))
-    // A banner alert: a bold title, the detail in subtle, actions on the right.
-    const banner = (key: string, title: string, detail: string, actions: unknown) => (
+      options.map(o =>
+        o.value === active ? (
+          <Button key={`${key}-${o.value}`} variant="secondary" label={o.label} onPress={() => pick(o.value)} />
+        ) : (
+          <Button key={`${key}-${o.value}`} plain label={o.label} onPress={() => pick(o.value)} />
+        ),
+      )
+    // An alert row: the message on the left, its actions on the right.
+    const banner = (key: string, message: string, actions: unknown) => (
       <Box key={key} flexDirection="row" justifyContent="space-between" gap={1}>
-        <Box gap={1}>
-          <Text bold>{title}</Text>
-          <Text color="subtle">{detail}</Text>
-        </Box>
+        <Text>{message}</Text>
         <Box gap={1}>{actions as any}</Box>
       </Box>
     )
+    const why = judgeDown
+      ? 'Laya not running, Haiku judged.'
+      : !l
+        ? 'No decision yet.'
+        : pinned
+        ? 'Pinned. arne keeps your pick until you choose Auto.'
+        : `${modelWord} because ${l.reason}.${lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''}`
     const k = (n: number) => `${Math.round(n / 1000)}k`
     return (
       <Box flexDirection="column">
         {effortOn &&
           banner(
             'alert-effortless',
-            'effortless is on',
-            'it sets effort too; disable it and restart',
+            'effortless is on: it sets effort too. Disable it and restart.',
             <Button key="disable-effortless" variant="primary" label="Disable effortless" onPress={() => disableEffortless($)} />,
           )}
         {heldText &&
-          offer &&
-          banner(
-            'alert-held',
-            `Cache expired on a ${k(offer.c.C)} chat`,
-            'your message is waiting',
-            [
-              <Button key="compact-send" variant="primary" label={`Compact & send${priced('compact')}`} onPress={() => compactAndSend($)} />,
-              <Button key="send-anyway" variant="secondary" label={`Send anyway${priced('continue')}`} onPress={() => sendAnyway($)} />,
-            ],
-          )}
-        {heldText &&
-          !offer &&
-          banner(
-            'alert-held',
-            'Cache expired',
-            'your message is waiting',
-            [
-              <Button key="compact-send" variant="primary" label="Compact & send" onPress={() => compactAndSend($)} />,
-              <Button key="send-anyway" variant="secondary" label="Send anyway" onPress={() => sendAnyway($)} />,
-            ],
-          )}
+          banner('alert-held', coldLine, [
+            <Button key="send-anyway" plain label="Send anyway" onPress={() => sendAnyway($)} />,
+            <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactAndSend($)} />,
+          ])}
         {offer &&
           !heldText &&
-          banner(
-            'alert-cold',
-            `Cache expired on a ${k(offer.c.C)} chat`,
-            `next message ${priced('continue').replace(' · ', '') || 'costs more'}; compacting first ${priced('compact').replace(' · ', '')}`,
-            [
-              <Button key="compact" variant={offer.best.action === 'compact' ? 'primary' : 'secondary'} label="Compact" onPress={() => compactNow($, '')} />,
-              <Button key="continue" role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
-            ],
-          )}
+          banner('alert-cold', coldLine, [
+            <Button key="compact" variant="primary" label="Compact" onPress={() => compactNow($, '')} />,
+            <Button key="continue" plain role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
+          ])}
         {band.state === 'heavy' &&
           c &&
           !offer &&
           banner(
             'alert-heavy',
-            `Chat is ${k(c.C)} tokens`,
-            `${Math.round((c.C / WINDOW) * 100)}% full; compacting keeps turns cheap`,
-            <Button key="compact" variant="secondary" label="Compact" onPress={() => compactNow($, '')} />,
+            `Chat is ${k(c.C)} tokens, ${Math.round((c.C / WINDOW) * 100)}% full. Compacting keeps turns cheap.`,
+            <Button key="compact" plain label="Compact" onPress={() => compactNow($, '')} />,
           )}
-        {picker && running && tierOf(picker) !== tierOf(running) && (
-          <Box key="picker-note" hover={{ scope: 'arne-picker' }}>
-            <Text color="subtle">
-              Running {shortModel(running)} · app picker shows {shortModel(picker)}
-            </Text>
-            <Box key="picker-card" position="absolute" top={1} left={0} display="none" hover={{ display: 'flex', scope: 'arne-picker' }}>
-              <Text color="subtle">Plugins can't move the app's model picker yet. The model arne set is the one that answers.</Text>
-            </Box>
-          </Box>
-        )}
         {mode === 'paused' ? (
           <Box flexDirection="row" gap={1}>
-            <Text color="claude">arne</Text>
+            <Text>arne</Text>
             <Text color="subtle">paused · you picked {appModel ? shortModel(appModel) : 'a model'}</Text>
             <Button key="auto" plain label="Resume" onPress={() => toggleAuto($)} />
           </Box>
         ) : mode === 'off' ? (
           <Box flexDirection="row" gap={1}>
-            <Text color="claude">arne</Text>
+            <Text>arne</Text>
             <Text color="subtle">off</Text>
             <Button key="auto" plain label="Turn on" onPress={() => toggleAuto($)} />
           </Box>
         ) : (
-          <Box flexDirection="row" justifyContent="space-between">
-            <Button key="band" plain onPress={toggle}>
-              <Text color="claude">arne</Text>
-              {'  '}
-              {l || band.state === 'routing'
-                ? [
-                    <Text key="m">{modelWord.padEnd(6)}</Text>,
-                    <Text key="e" color="subtle">{effortWord ? ` · ${effortWord.padEnd(6)}` : ' '.repeat(9)}</Text>,
-                    <Text key="r" color="inactive">{`  ${reason}`}</Text>,
-                  ]
-                : <Text color="subtle">auto</Text>}
-            </Button>
-            {cacheWords && (
-              <Button key="band-cache" plain onPress={toggle}>
-                <Text color={cool ? 'warning' : 'subtle'}>{cacheWords}</Text>
-              </Button>
-            )}
-          </Box>
-        )}
-        {open && mode === 'on' && (
           <Box flexDirection="column">
-            <Box flexDirection="row" gap={1}>
-              <Text color="subtle">Model </Text>
-              {segment(
-                'model',
-                [{ value: 'auto', label: `Auto (${modelWord})` }, ...(['haiku', 'sonnet', 'opus'] as const).map(v => ({ value: v, label: v[0].toUpperCase() + v.slice(1) }))],
-                pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto',
-                v => void setPinPart($, { tier: TIER_OF[v] }),
+            <Box flexDirection="row" justifyContent="space-between">
+              <Button key="band" plain onPress={toggle}>
+                <Text bold>arne</Text>
+                {'  '}
+                {l || band.state === 'routing'
+                  ? [
+                      <Text key="m">{modelWord.padEnd(6)}</Text>,
+                      <Text key="e" color="subtle">{effortWord ? ` · ${effortWord.padEnd(6)}` : ' '.repeat(9)}</Text>,
+                      <Text key="r" color="inactive">{`  ${reason}`}</Text>,
+                    ]
+                  : <Text color="subtle">auto</Text>}
+                <Text color="subtle">{open ? '  ▴' : '  ▾'}</Text>
+              </Button>
+              {cacheWords && (
+                <Button key="band-cache" plain onPress={toggle}>
+                  <Text color={cool ? 'warning' : 'subtle'}>{cacheWords}</Text>
+                </Button>
               )}
-              {pin?.tier && <Text color="subtle">pinned</Text>}
             </Box>
-            <Box flexDirection="row" gap={1}>
-              <Text color="subtle">Effort</Text>
-              {segment(
-                'effort',
-                [{ value: 'auto', label: effortWord ? `Auto (${effortWord})` : 'Auto' }, ...(['low', 'medium', 'high'] as const).map(v => ({ value: v, label: v }))],
-                pin?.effort ?? 'auto',
-                v => void setPinPart($, { effort: v === 'auto' ? undefined : (v as Pin['effort']) }),
-              )}
-              {pin?.effort && <Text color="subtle">pinned</Text>}
-            </Box>
-            {l && (
-              <Box flexDirection="row" gap={1}>
-                <Text color="subtle">
-                  Why  {l.reason} ({l.source}){lastCost > 0 ? ` · last turn ${lastCost.toFixed(3)}` : ''}
-                </Text>
-                <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
-                <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
+            {open && (
+              <Box flexDirection="column" gap={1}>
+                <Box flexDirection="row" gap={2}>
+                  <Text color="subtle">Model</Text>
+                  {segment(
+                    'model',
+                    [{ value: 'auto', label: 'Auto' }, { value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }],
+                    pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto',
+                    v => void setPinPart($, { tier: v === 'auto' ? undefined : TIER_OF[v] }),
+                  )}
+                  <Text color="subtle">{pin?.tier ? 'pinned' : `picked ${modelWord}`}</Text>
+                </Box>
+                <Box flexDirection="row" gap={2}>
+                  <Text color="subtle">Effort</Text>
+                  {segment(
+                    'effort',
+                    [
+                      { value: 'auto', label: 'Auto' },
+                      { value: 'low', label: 'Low' },
+                      { value: 'medium', label: 'Medium' },
+                      { value: 'high', label: 'High' },
+                      { value: 'xhigh', label: 'Extra high' },
+                      { value: 'max', label: 'Max' },
+                    ],
+                    pin?.effort ?? 'auto',
+                    v => void setPinPart($, { effort: v === 'auto' ? undefined : (v as Pin['effort']) }),
+                  )}
+                  <Text color="subtle">{pin?.effort ? 'pinned' : effortWord ? `picked ${effortWord}` : 'Haiku takes no effort'}</Text>
+                </Box>
+                <Box flexDirection="row" gap={2} justifyContent="space-between">
+                  <Text>{why}</Text>
+                  {l && !pinned && thankedKey !== l.key && (
+                    <Box flexDirection="row" gap={1}>
+                      <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
+                      <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
+                    </Box>
+                  )}
+                  {l && !pinned && thankedKey === l.key && <Text color="subtle">Logged. arne learns from this.</Text>}
+                </Box>
+                {picker && running && tierOf(picker) !== tierOf(running) && (
+                  <Text color="subtle">The app's model menu still shows {shortModel(picker)}. arne runs this turn on {shortModel(running)}.</Text>
+                )}
+                <Box flexDirection="row" gap={2}>
+                  <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
+                  <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
+                </Box>
               </Box>
             )}
-            <Box flexDirection="row" gap={2}>
-              <Button key="auto" plain dimColor label="Turn off arne" onPress={() => toggleAuto($)} />
-              <Button key="gear" plain dimColor label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
-            </Box>
           </Box>
         )}
       </Box>
     )
   })
 
-  // The settings pane, grouped like /config: each row cycles its value through $.config.set, so the two never disagree.
+  // The settings pane: a label and a segmented control per row. A press sets that value through $.config.set,
+  // so the pane and /config never disagree.
   on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const set = (key: keyof Live, value: unknown) => () => $.config.set({ key: `arne.${key}`, value })
-    const mode = await modeOf($)
-    const valueOf = (k: keyof Live) =>
-      typeof live[k] === 'boolean' ? (live[k] ? 'on' : 'off') : typeof live[k] === 'number' ? `${Math.round((live[k] as number) / 1000)}k tokens` : String(live[k])
-    const nextValue = (k: keyof Live) =>
-      k === 'auto' ? mode !== 'on' : CHOICES[k] ? nextOf(CHOICES[k]!, live[k]) : STEP[k] ? nextOf(STEP[k]!, live[k]) : !live[k]
-    const row = (k: keyof Live) => (
-      <Button key={k} variant="secondary" label={`${TITLE[k]}: ${k === 'auto' ? mode : valueOf(k)}`} onPress={set(k, nextValue(k))} />
-    )
+    const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
+      const set = (value: unknown) => $.config.set({ key: `arne.${key}`, value })
+      return (
+        <Box key={key} flexDirection="row" justifyContent="space-between" gap={2}>
+          <Text>{label}</Text>
+          <Box flexDirection="row" gap={1}>
+            {options.map(o =>
+              o.value === live[key] ? (
+                <Button key={`${key}-${String(o.value)}`} variant="secondary" label={o.label} onPress={() => set(o.value)} />
+              ) : (
+                <Button key={`${key}-${String(o.value)}`} plain label={o.label} onPress={() => set(o.value)} />
+              ),
+            )}
+          </Box>
+        </Box>
+      )
+    }
+    const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
+    const EFFORTS = [
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+      { value: 'xhigh', label: 'Extra high' },
+      { value: 'max', label: 'Max' },
+    ]
     return (
       <Box flexDirection="column" gap={1}>
-        {GROUPS.map(g => (
-          <Box key={g.name} flexDirection="column">
-            <Text bold>{g.name}</Text>
-            <Text color="subtle">{g.about}</Text>
-            {g.keys.map(row)}
-          </Box>
-        ))}
-        <Text color="inactive">Each press moves one step. The same settings are in /config.</Text>
+        <Box flexDirection="column">
+          <Text bold>Routing</Text>
+          {choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
+          {choice('Judge', 'backend', [
+            { value: 'heuristic', label: 'Rules only' },
+            { value: 'haiku', label: 'Haiku' },
+            { value: 'laya', label: 'Laya' },
+          ])}
+          {live.backend === 'laya' && (
+            <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>
+          )}
+        </Box>
+        <Box flexDirection="column">
+          <Text bold>Range</Text>
+          {choice('Cheapest model', 'modelFloor', MODELS)}
+          {choice('Strongest model', 'modelCeiling', MODELS)}
+          {choice('Lowest effort', 'effortFloor', EFFORTS)}
+          {choice('Highest effort', 'effortCeiling', EFFORTS)}
+        </Box>
+        <Text color="inactive">Also in /config.</Text>
+        <Button role="dismiss" label="Done" onPress={() => undefined} />
       </Box>
     )
   })

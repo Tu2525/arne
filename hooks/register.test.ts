@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 // The session beneath arne: a model /model moves, prompts that enter, requests that go out.
 function engine(on: any, start = 'claude-opus-5-5') {
-  const s = { model: start, ran: [] as string[], entered: [] as string[], sent: [] as string[], usage: null as unknown, statuses: [] as string[] }
+  const s = { model: start, ran: [] as string[], entered: [] as string[], sent: [] as string[], efforts: [] as unknown[], usage: null as unknown, statuses: [] as string[] }
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on)
   on('ui.status', (_$: unknown, e: unknown) => {
@@ -20,8 +20,9 @@ function engine(on: any, start = 'claude-opus-5-5') {
     if (e.command === 'model') s.model = e.args
     return { text: 'ok' }
   })
-  on('turn.step', async function* (_$: unknown, e: { model: string; turnId: string; index: number }) {
+  on('turn.step', async function* (_$: unknown, e: { model: string; turnId: string; index: number; effort?: string }) {
     s.sent.push(e.model)
+    s.efforts.push(e.effort)
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: s.usage }
   })
   return { s, clock }
@@ -156,7 +157,28 @@ test('the band says so when arne runs a model the app picker does not show (17f)
   for (let i = 0; i < 3; i++) await clock.settle()
   // arne's own /model, as the app reports it.
   await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'claude-opus-5-5', source: 'command' })
-  expect(await ui.find({ type: 'Text', text: /Running Opus · app picker shows Sonnet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The app's model menu still shows Sonnet. arne runs this turn on Opus/ })).toBeDefined()
+})
+
+test('a pin of xhigh passes the default ceiling and reaches the native /effort and the request (17h)', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  await $.command.run({ command: 'arne', args: 'pin opus xhigh' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  s.ran.length = 0
+  await $.prompt.submit(typed('refactor the parser'))
+  await clock.settle()
+  expect(s.ran).toEqual(['/effort xhigh'])
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned opus · xhigh')
+})
+
+test('the Judge row set to Laya sets backend laya, and says Laya runs here (17h)', async ($: any, on: any) => {
+  engine(on)
+  on('config.set', (_$: unknown, e: { value: unknown }) => ({ value: e.value }))
+  // The Laya segment's press calls this same set; the harness does not reach the pane's buttons.
+  await $.config.set({ key: 'arne.backend', value: 'laya' })
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend laya')
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', props: {}, requestId: 'arne-settings', viewport: { columns: 80, rows: 30 } })
+  expect(await pane.find({ type: 'Text', text: /Laya runs on this machine through laya-serve/ })).toBeDefined()
 })
 
 test('a pin from the band or /arne pin moves /model at once, before any prompt (17f)', async ($: any, on: any) => {
@@ -181,7 +203,7 @@ test('the band never prefixes "arne:", says off in words, and the settings pane 
   expect(await band.find({ type: 'Text', text: 'off' })).toBeDefined()
 
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', props: {}, requestId: 'arne-settings', viewport: { columns: 80, rows: 30 } })
-  for (const group of ['Routing', 'Models', 'Cache & compact']) expect(await pane.find({ type: 'Text', text: group })).toBeDefined()
+  for (const group of ['Routing', 'Range']) expect(await pane.find({ type: 'Text', text: group })).toBeDefined()
 })
 
 test('a step with no usage keeps the cache size, and the footer gets no status while on (17g)', async ($: any, on: any) => {
