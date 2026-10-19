@@ -54,7 +54,13 @@ test('summaryPrompt keeps the tail when long', () => {
 test('bandText states', () => {
   const base = { off: false, paused: false, routing: false, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 38 * 60_000 + 10_000, C: 80_000 }
   expect(bandText(base).text).toBe('Sonnet · med · cache 38:10 · ◔ 40%')
-  expect(bandText(base).short).toBe('arne Sonnet·med')
+  expect(bandText(base).short).toBe('Sonnet·med')
+  // The footer already names the plugin: no status text repeats "arne".
+  for (const s of [{ off: true }, { paused: true }, { routing: true }, { C: 160_000 }, { warmLeftMs: 0, C: 120_000 }]) {
+    expect(bandText({ ...base, ...s }).short.startsWith('arne')).toBe(false)
+  }
+  // Paused shows the model the person picked, not arne's last decision.
+  expect(bandText({ ...base, paused: true, model: 'claude-opus-5-5' }).short).toBe('paused · you picked Opus')
   expect(bandText({ ...base, routing: true }).state).toBe('routing')
   expect(bandText({ ...base, paused: true }).state).toBe('paused')
   expect(bandText({ ...base, warmLeftMs: 0, C: 120_000 }).state).toBe('cold')

@@ -161,15 +161,16 @@ export function bandText(i: BandInput): { state: BandState; text: string; short:
   const k = `${Math.round(i.C / 1000)}k`
   const pct = `${Math.round((i.C / WINDOW) * 100)}%`
   const flash = i.flash ? ' ▲' : ''
-  if (i.off) return { state: 'off', text: 'arne off', short: 'arne off' }
-  if (i.routing) return { state: 'routing', text: 'routing…', short: 'arne …' }
-  if (i.paused) return { state: 'paused', text: `paused · ${label} (manual /model; /arne on resumes)`, short: 'arne paused' }
-  if (i.C > 0 && i.warmLeftMs <= 0) return { state: 'cold', text: `cold · ${k} · see the offer below`, short: `arne cold ${k}` }
-  if (i.C >= (i.heavyTokens ?? HEAVY_TOKENS)) return { state: 'heavy', text: `${label} · heavy ${k} · ◔ ${pct}`, short: `arne ${shortModel(i.model)}·${shortEffort(i.effort)} heavy` }
+  // `short` goes to the status line, which the footer already labels with the plugin's name.
+  if (i.off) return { state: 'off', text: `off · ${label}`, short: 'off' }
+  if (i.routing) return { state: 'routing', text: 'routing…', short: '…' }
+  if (i.paused) return { state: 'paused', text: `paused · ${label} (you picked it; /arne on resumes)`, short: `paused · you picked ${shortModel(i.model)}` }
+  if (i.C > 0 && i.warmLeftMs <= 0) return { state: 'cold', text: `cold · ${k} · see the offer below`, short: `cold ${k}` }
+  if (i.C >= (i.heavyTokens ?? HEAVY_TOKENS)) return { state: 'heavy', text: `${label} · heavy ${k} · ◔ ${pct}`, short: `${shortModel(i.model)}·${shortEffort(i.effort)} heavy` }
   return {
     state: 'normal',
     text: `${label} · cache ${mmss(i.warmLeftMs)} · ◔ ${pct}${flash}`,
-    short: `arne ${shortModel(i.model)}·${shortEffort(i.effort)}${flash}`,
+    short: `${shortModel(i.model)}·${shortEffort(i.effort)}${flash}`,
   }
 }
 

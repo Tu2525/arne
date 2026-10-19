@@ -35,6 +35,12 @@ const clockNow = atom({ plugin: 'arne', key: 'now' } as const, 0)
 const coldDismissed = atom({ plugin: 'arne', key: 'coldDismissed' } as const, 0)
 const routing = atom({ plugin: 'arne', key: 'routing' } as const, false)
 const isOff = atom({ plugin: 'arne', key: 'isOff' } as const, false)
+// True after the person picked a model by hand (/model or the picker). One of the two inputs to mode().
+const isPaused = atom({ plugin: 'arne', key: 'isPaused' } as const, false)
+// The effort the app sends when arne leaves it alone: what the band shows while paused or off.
+const appEffort = atom({ plugin: 'arne', key: 'appEffort' } as const, null)
+// The session's real model, as state so the band redraws when it changes ($.session.model() alone would not).
+const sessionModel = atom({ plugin: 'arne', key: 'sessionModel' } as const, null)
 // True while effortless is enabled: it writes effort, so arne routes models only.
 const effortless = atom({ plugin: 'arne', key: 'effortless' } as const, false)
 const EFFORTLESS = 'effortless@effortless'
@@ -72,10 +78,10 @@ async function compactNow($: any, note: string) {
 // Module state. Reset on a reload, like every module variable.
 let current: Decision | undefined
 let prev: Decision | undefined
-let baseline: string | undefined // the session model arne last saw
-let paused = false
+// The session model arne expects: the one it last switched to, or last saw. A switch to another tier is the person's.
+let expected: string | undefined
+let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
-let pendingSwitch: string | undefined // the model arne's own /model run is moving to
 let afterCompact = false // a compact just ran: the next prompt is a cache boundary
 let switchAfterTurn: string | undefined // the real /model to run once the turn is done
 // Subagent decisions, by agentId, so each step of a run uses its turn's choice.
@@ -110,6 +116,27 @@ const DEFAULTS: Live = {
 }
 let live: Live = { ...DEFAULTS }
 const FIELDS = Object.keys(DEFAULTS) as (keyof Live)[]
+
+// The one on/off answer every surface reads: the /arne reply, the band, the status line and the pane.
+type Mode = 'off' | 'paused' | 'on'
+// Reads atoms, not `live`, so every surface that asks redraws when the answer changes.
+async function modeOf($: any): Promise<Mode> {
+  return (await read($, isOff)) ? 'off' : (await read($, isPaused)) ? 'paused' : 'on'
+}
+
+// Clears a pause: the session's model is now the one arne expects.
+async function resume($: any) {
+  await update($, isPaused, () => false)
+  expected = await $.session.model()
+}
+
+async function showStatus($: any) {
+  $.ui.status(statusOf(await modeOf($), await $.session.model()))
+}
+
+// The status line: the footer already names the plugin, so no "arne" here.
+const statusOf = (mode: Mode, model: string) =>
+  mode === 'on' ? undefined : bandText({ off: mode === 'off', paused: mode === 'paused', routing: false, model, warmLeftMs: 0, C: 0 }).short
 
 async function settings($: any): Promise<Settings> {
   return {
@@ -182,6 +209,12 @@ export const register: Register = (on, options) => {
     const field = e.key.startsWith('arne.') ? (e.key.slice(5) as keyof Live) : undefined
     if (field && FIELDS.includes(field) && !('deny' in r)) {
       ;(live as Record<string, unknown>)[field] = r.value
+      if (field === 'auto') {
+        await update($, isOff, () => !r.value)
+        // Turning it on, from /config, the pane or /arne on, is the person's go-ahead: clear any pause.
+        if (r.value) await resume($)
+        await showStatus($)
+      }
     }
     return r
   }).catch(($, e, next) => next(e))
@@ -193,6 +226,7 @@ export const register: Register = (on, options) => {
     })
     const eff = await effortlessOn($)
     await update($, effortless, () => eff)
+    await update($, isOff, () => !live.auto)
     // Drives the band's countdown. ponytail: a 1s state write; slow it down if redraws ever cost.
     $.clock.every(1000, async () => {
       if ((await read($, cache)) === null) return
@@ -202,13 +236,18 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // arne's own switch lands here as source "command" too, so it is told apart by its target.
+  // arne's own switch lands here as source "command" too, so it is told apart by its tier: arne sets
+  // `expected` before it runs /model, and a repeat event for the same switch still matches.
   on('classic.PostModelSwitch', async ($, e, next) => {
     const r = await next(e)
-    const isOwn = pendingSwitch !== undefined && tierOf(e.to_model) === tierOf(pendingSwitch)
-    pendingSwitch = undefined
-    if (!isOwn && (e.source === 'command' || e.source === 'picker' || e.source === 'sdk')) paused = true
-    baseline = e.to_model
+    // ponytail: a manual pick of the tier arne already expects reads as arne's own and does not pause;
+    // tell them apart by origin if command.run ever carries one for /model.
+    const isOwn = expected !== undefined && tierOf(e.to_model) === tierOf(expected)
+    const byHand = e.source === 'command' || e.source === 'picker' || e.source === 'sdk'
+    if (!isOwn && byHand && !(await read($, isOff))) await update($, isPaused, () => true)
+    expected = e.to_model
+    await update($, sessionModel, () => e.to_model)
+    await showStatus($)
     return r
   }).catch(($, e, next) => next(e))
 
@@ -218,13 +257,22 @@ export const register: Register = (on, options) => {
     const target = switchAfterTurn
     if (e.agentId === undefined && target) {
       switchAfterTurn = undefined
+      switching = true
       $.clock.after(0, async () => {
-        pendingSwitch = target
+        // The person may have picked a model while this waited: theirs stands.
+        if ((await modeOf($)) !== 'on') {
+          switching = false
+          return
+        }
+        const was = expected
+        expected = target
         try {
           await $.command.run({ command: 'model', args: target })
         } catch {
-          pendingSwitch = undefined
+          expected = was
           $.ui.toast(`arne: could not switch /model to ${target}`)
+        } finally {
+          switching = false
         }
       })
     }
@@ -269,11 +317,12 @@ export const register: Register = (on, options) => {
     switch (sub) {
       case 'on':
         await $.config.set({ key: 'arne.auto', value: true })
-        paused = false
-        baseline = await $.session.model()
+        await resume($)
+        await showStatus($)
         return { text: 'arne on.' }
       case 'off':
         await $.config.set({ key: 'arne.auto', value: false })
+        await showStatus($)
         return { text: 'arne off. Requests use the session model.' }
       case 'settings':
         await $.ui.open({ id: SETTINGS, title: 'arne settings' })
@@ -283,6 +332,9 @@ export const register: Register = (on, options) => {
         if (!tier) return { text: 'Usage: /arne pin haiku|sonnet|opus [low|medium|high]' }
         const effort = (rest[1] ?? 'medium') as Decision['effort']
         await $.store.set('pin', { tier, effort })
+        // A pin is the person's pick made through arne: it ends a pause, so every surface shows the pin.
+        await resume($)
+        await showStatus($)
         return { text: `arne pinned to ${rest[0]} · ${effort}.` }
       }
       case 'unpin':
@@ -324,12 +376,15 @@ export const register: Register = (on, options) => {
         const warm = (['S', 'M', 'L'] as Tier[])
           .map(t => `${MODEL[t]} ${(c.warmUntil[t] ?? 0) > now ? `warm ${mmss(c.warmUntil[t]! - now)}` : 'cold'}`)
           .join(', ')
-        return { text: `arne debug: ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. paused ${paused}, switch queued ${switchAfterTurn ?? pendingSwitch ?? "none"}, after compact ${afterCompact}.` }
+        return { text: `arne debug: ${await modeOf($)}, ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. expected ${expected ?? 'none'}, switch queued ${switchAfterTurn ?? 'none'}, after compact ${afterCompact}.` }
       }
-      default:
+      default: {
+        const mode = await modeOf($)
+        const state = mode === 'paused' ? 'paused (you picked a model; /arne on resumes)' : mode
         return {
-          text: `arne ${s.enabled ? 'on' : 'off'}, backend ${s.backend}${s.pin ? `, pinned ${s.pin.tier}` : ''}. Subcommands: on, off, pin, unpin, why, log, backend, debug.`,
+          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${s.pin.tier}` : ''}. Subcommands: on, off, pin, unpin, why, log, backend, debug.`,
         }
+      }
     }
   })
 
@@ -371,9 +426,12 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) {
       const model = await $.session.model()
       // A model the user set by hand (/model) pauses arne. classic.PostModelSwitch catches it at once;
-      // this diff is the fallback, skipped while arne's own switch is still landing.
-      if (baseline !== undefined && model !== baseline && !pendingSwitch) paused = true
-      baseline ??= model
+      // this is the fallback. By tier: the same model can come back as an alias or a full id.
+      // Skipped while arne's own switch waits: the session is still on the old model then.
+      if (expected !== undefined && !switching && tierOf(model) !== tierOf(expected) && s.enabled) await update($, isPaused, () => true)
+      expected ??= model
+      await update($, sessionModel, () => model)
+      const paused = await read($, isPaused)
 
       const routed0 = s.enabled
         ? await route(e.text, { prev, paused, pin: s.pin ?? undefined, backends })
@@ -408,7 +466,7 @@ export const register: Register = (on, options) => {
           switchAfterTurn = MODEL[decided.tier]
         }
       }
-      $.ui.status(!s.enabled ? 'arne off' : paused ? 'arne paused (manual /model)' : undefined)
+      $.ui.status(statusOf(await modeOf($), model))
       if (current) {
         const row: Row = {
           key: e.turnId,
@@ -442,6 +500,8 @@ export const register: Register = (on, options) => {
 
     // Haiku takes no effort setting. While effortless is on, it keeps the effort it set.
     const effortOwned = await read($, effortless)
+    // `e` is the app's own request, before arne touches it: its effort is what the native control says.
+    if (isMain && (e.effort ?? null) !== (await read($, appEffort))) await update($, appEffort, () => e.effort ?? null)
     const routed = decision
       ? { ...e, model: MODEL[decision.tier], effort: effortOwned ? e.effort : decision.tier === 'S' ? undefined : decision.effort }
       : e
@@ -450,7 +510,7 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now()
       const tier = tierOf(routed.model)
       const warmLeftMs = tier ? (c?.warmUntil[tier] ?? 0) - now : 0
-      $.ui.status(bandText({ off: false, paused, routing: false, model: routed.model, effort: decision.effort, warmLeftMs, C: c?.C ?? 0 }).short)
+      $.ui.status(bandText({ off: false, paused: false, routing: false, model: routed.model, effort: decision.effort, warmLeftMs, C: c?.C ?? 0 }).short)
     }
 
     const r = yield* next(routed)
@@ -491,14 +551,17 @@ export const register: Register = (on, options) => {
       heavy: { off: false, paused: false, routing: false, model: 'claude-opus-5-5', effort: 'high', warmLeftMs: 600_000, C: 160_000 },
       normal: { off: false, paused: false, routing: false, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 38 * 60_000, C: 80_000 },
     }
+    // Paused or off, arne sends nothing of its own: show what the app runs, never the last decision.
+    const mode = await modeOf($)
+    const appModel = mode === 'on' ? undefined : ((await read($, sessionModel)) ?? undefined)
     const band = forced
       ? bandText(sample[forced.state as BandState])
       : bandText({
-          off: await read($, isOff),
-          paused,
+          off: mode === 'off',
+          paused: mode === 'paused',
           routing: await read($, routing),
-          model: l ? l.model : (c ? MODEL[c.model] : MODEL.M),
-          effort: l?.effort,
+          model: appModel ?? (l ? l.model : (c ? MODEL[c.model] : MODEL.M)),
+          effort: mode === 'on' ? l?.effort : ((await read($, appEffort)) ?? undefined),
           warmLeftMs: left,
           C: c?.C ?? 0,
           heavyTokens: live.heavyTokens,
@@ -542,9 +605,10 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const set = (key: keyof Live, value: unknown) => () => $.config.set({ key: `arne.${key}`, value })
+    const mode = await modeOf($)
     return (
       <Box flexDirection="column">
-        <Button label={`Auto routing: ${live.auto ? 'on' : 'off'}`} onPress={set('auto', !live.auto)} />
+        <Button label={`Auto routing: ${mode}`} onPress={set('auto', mode !== 'on')} />
         {(Object.keys(CHOICES) as (keyof Live)[]).map(k => (
           <Button key={k} label={`${k}: ${String(live[k])}`} onPress={set(k, nextOf(CHOICES[k]!, live[k]))} />
         ))}
