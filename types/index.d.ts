@@ -6,6 +6,7 @@ export type Row = {
   source: string
   out: number // output tokens, summed over the turn's steps
   cacheRead: number // cache-read input tokens, summed
+  waitFor?: string // full model id the decision wanted, when the chat stays on another model until the cache cools
 }
 
 export type Cache = {

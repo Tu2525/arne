@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText, clampEffort, clampTier, midTask } from './econ'
+import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText, clampEffort, clampTier, midTask, fillOf, fitRest, fitTier, plainReason } from './econ'
 
 const near = (got: number, want: number) => expect(Math.abs(got - want) / want <= 0.05).toBe(true)
 
@@ -53,7 +53,7 @@ test('summaryPrompt keeps the tail when long', () => {
 
 test('bandText states', () => {
   const base = { off: false, paused: false, routing: false, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 38 * 60_000 + 10_000, C: 80_000 }
-  expect(bandText(base).text).toBe('Sonnet · med · cache 38:10 · ◔ 40%')
+  expect(bandText(base).text).toBe('Sonnet · med · cache warm 38:10 · 80k')
   expect(bandText(base).short).toBe('Sonnet·med')
   // The footer already names the plugin: no status text repeats "arne".
   for (const s of [{ off: true }, { paused: true }, { routing: true }, { C: 160_000 }, { warmLeftMs: 0, C: 120_000 }]) {
@@ -83,4 +83,41 @@ test('clamps keep tiers and efforts inside the floor and ceiling', () => {
   expect(clampEffort('max', 'low', 'high')).toBe('high')
   expect(clampEffort('max', 'low', 'max')).toBe('max')
   expect(clampEffort('xhigh', 'low', 'high')).toBe('high')
+})
+
+test('the context fill uses the routed tier window and never passes 100 (17i)', () => {
+  expect(fillOf(263_000, 'S')).toBe(100) // Haiku's 200k window: capped, not 132
+  expect(fillOf(263_000, 'M')).toBe(26)
+  expect(fillOf(132_000, 'S')).toBe(66)
+  const base = { off: false, paused: false, routing: false, model: 'claude-haiku-5-5', effort: 'medium', warmLeftMs: 60_000, C: 263_000 }
+  expect(bandText(base).text).not.toMatch(/132%/)
+})
+
+test('a chat too big for a tier moves to the next, never below the asked tier (17i)', () => {
+  expect(fitTier('S', 263_000)).toBe('M')
+  expect(fitTier('S', 150_000)).toBe('S')
+  expect(fitTier('L', 2_000_000)).toBe('L') // no window fits: the largest tier
+  expect(fitTier('M', 10)).toBe('M')
+})
+
+test('internal reason codes read as plain words (17i)', () => {
+  expect(plainReason('fast: hard')).toBe('this looks hard')
+  expect(plainReason('prior: Explore')).toBe('Explore is a fixed rule')
+  expect(plainReason('continuation')).toBe('it continues the last turn')
+  expect(plainReason('Looks like a rename')).toBe('Looks like a rename')
+})
+
+test('the resting line keeps arne and the model, cuts the reason first, and steps the cache down (17i)', () => {
+  const caches = ['cache warm 42m · 263k', 'cache 42m', '42m']
+  const head = 'arne  Haiku · medium'
+  const reason = 'Opus fits better; switching waits for the cache'
+  const wide = fitRest(100, head, reason, caches)
+  expect(wide.cache).toBe(caches[0])
+  expect(wide.reason).toBe(reason)
+  const mid = fitRest(50, head, reason, caches)
+  expect(mid.head).toBe(head)
+  expect(mid.cache).toBe(caches[1])
+  expect(mid.reason.endsWith('…')).toBe(true)
+  expect(`${mid.head}  ${mid.reason}  ${mid.cache}`.length).toBeLessThanOrEqual(50)
+  expect(fitRest(30, head, 'x', caches).cache).toBe('42m')
 })

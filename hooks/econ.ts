@@ -139,7 +139,15 @@ export const midTask = (reason: string | undefined, summary: string) =>
 
 // --- Band indicator (step 14) ---
 
-export const WINDOW = 200_000 // context window used for the ◔ fill; ponytail: fixed, read the model's limit if it changes
+// Context window per tier, in tokens. ponytail: assumed sizes (Haiku 200k, Sonnet and Opus 1M); read the model's limit if they differ.
+export const WINDOWS: Record<Tier, number> = { S: 200_000, M: 1_000_000, L: 1_000_000 }
+/** Context fill as a whole percent of the tier's window, never above 100. */
+export const fillOf = (C: number, t: Tier) => Math.min(100, Math.round((C / WINDOWS[t]) * 100))
+/** The cheapest tier, not below `tier`, whose window holds C tokens. Tiers are ordered S < M < L. */
+export function fitTier(tier: Tier, C: number): Tier {
+  const order: Tier[] = ['S', 'M', 'L']
+  return order.find(t => order.indexOf(t) >= order.indexOf(tier) && WINDOWS[t] >= C) ?? 'L'
+}
 export const HEAVY_TOKENS = 150_000 // over this, the band warns that the chat is large
 export type BandState = 'routing' | 'off' | 'paused' | 'cold' | 'heavy' | 'normal'
 export type BandInput = {
@@ -163,7 +171,7 @@ export const shortEffort = (effort?: string) => (effort ? EFFORT_SHORT[effort] ?
 export function bandText(i: BandInput): { state: BandState; text: string; short: string } {
   const label = `${shortModel(i.model)} · ${shortEffort(i.effort)}`
   const k = `${Math.round(i.C / 1000)}k`
-  const pct = `${Math.round((i.C / WINDOW) * 100)}%`
+  const pct = `${fillOf(i.C, tierOf(i.model) ?? 'M')}%`
   const flash = i.flash ? ' ▲' : ''
   // `short` goes to the status line, which the footer already labels with the plugin's name.
   if (i.off) return { state: 'off', text: `off · ${label}`, short: 'off' }
@@ -173,7 +181,7 @@ export function bandText(i: BandInput): { state: BandState; text: string; short:
   if (i.C >= (i.heavyTokens ?? HEAVY_TOKENS)) return { state: 'heavy', text: `${label} · heavy ${k} · ◔ ${pct}`, short: `${shortModel(i.model)}·${shortEffort(i.effort)} heavy` }
   return {
     state: 'normal',
-    text: `${label} · cache ${mmss(i.warmLeftMs)} · ◔ ${pct}${flash}`,
+    text: `${label} · cache warm ${mmss(i.warmLeftMs)} · ${k}${flash}`,
     short: `${shortModel(i.model)}·${shortEffort(i.effort)}${flash}`,
   }
 }
@@ -199,3 +207,38 @@ export function clampEffort<E extends string>(effort: E, floor: string, ceiling:
   const r = Math.min(Math.max(EFFORT_RANK[effort] ?? 1, lo), Math.max(lo, hi))
   return (Object.keys(EFFORT_RANK).find(k => EFFORT_RANK[k] === r) ?? effort) as E
 }
+
+// --- Words for people (step 17i) ---
+
+/** A decision's internal reason code as a plain phrase. Judge reasons are already words and pass through. */
+export function plainReason(code: string): string {
+  if (code === 'fast: hard') return 'this looks hard'
+  if (code === 'fast: easy') return 'this looks easy'
+  if (code === 'continuation') return 'it continues the last turn'
+  if (code === 'default') return 'there is no clear signal'
+  if (code === 'window') return 'the chat needs a bigger window'
+  if (code.startsWith('prior: ')) return `${code.slice(7)} is a fixed rule`
+  return code
+}
+
+/**
+ * The resting line at a given width. `head` (the mark, model and effort) never shrinks; the reason takes
+ * the leftover and ends in an ellipsis; the cache text falls back through `caches`, longest first.
+ */
+export function fitRest(width: number, head: string, reason: string, caches: string[]): { head: string; reason: string; cache: string } {
+  const GAP = 2
+  const last = caches[caches.length - 1]
+  for (const cache of caches) {
+    const room = width - head.length - cache.length - GAP * 2
+    if (room >= Math.min(reason.length, 12) || cache === last) {
+      if (room <= 0) return { head, reason: '', cache }
+      const r = reason.length <= room ? reason : `${reason.slice(0, Math.max(0, room - 1))}…`
+      return { head, reason: r, cache }
+    }
+  }
+  return { head, reason: '', cache: last }
+}
+
+/** Effort names for the band's panel: the short forms when the panel is narrow. */
+export const EFFORT_LABEL: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' }
+export const EFFORT_LABEL_SHORT: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHi', max: 'Max' }

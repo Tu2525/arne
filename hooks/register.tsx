@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, EFFORT_RANK, midTask, mmss, nextTtl, planSwitch, shortModel, summaryPrompt, tierOf, WINDOW, PRICE, OUT, READ } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, OUT, READ } from './econ'
 import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
@@ -332,8 +332,12 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
     // Only a model pin is a pin for switching: it moves the real /model like any pin did.
     source: pin?.tier ? 'pin' : r.source,
   }
-  prev = d
-  return d
+  // Never route to a model whose window is smaller than the chat: a bigger tier takes the prompt instead.
+  const c: Cache | null = await read($, cache)
+  const tier = c ? fitTier(d.tier, c.C) : d.tier
+  const sized = tier === d.tier ? d : { ...d, tier, reason: 'window' }
+  prev = sized
+  return sized
 }
 
 // The model the real /model should move to before this prompt, or undefined to stay.
@@ -447,7 +451,8 @@ export const register: Register = (on, options) => {
     await update($, effortless, () => eff)
     await update($, isOff, () => !live.auto)
     const first = await $.session.model()
-    await update($, appPicker, was => was ?? first)
+    // The app's picker shows the session's model at start. Re-read each start, so a stale pick does not outlive it.
+    await update($, appPicker, () => first)
     // Drives the band's countdown. ponytail: a 1s state write; slow it down if redraws ever cost.
     $.clock.every(1000, async () => {
       if ((await read($, cache)) === null) return
@@ -646,10 +651,9 @@ export const register: Register = (on, options) => {
       }
       // The request runs on the session's model, so the log and band say that model, with the reason.
       const chat = tierOf(model)
-      current =
-        decided && chat && decided.tier !== chat
-          ? { ...decided, tier: chat, reason: `${decided.reason}; stays on ${shortModel(model)} (cache warm, or mid-turn)` }
-          : decided
+      // Held on the chat's model (cache warm, or mid-turn): the row keeps the decision's own reason and says what it waited for.
+      const waitFor = decided && chat && decided.tier !== chat ? MODEL[decided.tier] : undefined
+      current = decided && chat && decided.tier !== chat ? { ...decided, tier: chat } : decided
       $.ui.status(statusOf(await modeOf($), model))
       if (current) {
         const row: Row = {
@@ -660,6 +664,7 @@ export const register: Register = (on, options) => {
           source: current.source,
           out: 0,
           cacheRead: 0,
+          waitFor,
         }
         await update($, last, () => row)
         await update($, log, list => [...list, row].slice(-200))
@@ -716,6 +721,9 @@ export const register: Register = (on, options) => {
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
     const { Box, Button, Select, Text } = $.ui.resolve(e)
+    // The width the band gets, re-read on every render: AbovePrompt's bodyColumns, else the viewport's columns.
+    const cols = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80)
+    const narrow = cols < 72
     // A cold chat under coldTokens is cheap to re-warm: no offer. A dismissal lasts until the cache warms again.
     const heldText = await read($, held)
     const pin = (await settings($)).pin
@@ -768,9 +776,23 @@ export const register: Register = (on, options) => {
     const runModel = appModel ?? (l ? l.model : running ?? MODEL.M)
     const modelWord = shortModel(runModel)
     const effortWord = tierOf(runModel) === 'S' ? '' : ((mode === 'on' ? l?.effort : await read($, appEffort)) ?? '')
-    const reason = band.state === 'routing' ? 'routing…' : l ? (l.reason.length > 28 ? `${l.reason.slice(0, 27)}…` : l.reason) : ''
+    // A decision the chat's cache holds back: the band says which model it wanted and that the switch waits.
+    const waiting = l?.waitFor && tierOf(l.waitFor) !== tierOf(l.model) ? l.waitFor : undefined
+    const reason =
+      band.state === 'routing'
+        ? 'routing…'
+        : waiting
+          ? `${shortModel(waiting)} fits better; switching waits for the cache`
+          : l
+            ? plainReason(l.reason)
+            : ''
     const minutes = Math.ceil(left / 60_000)
-    const cacheWords = c ? `cache ${left > 0 ? `${minutes}m` : 'cold'} · ${Math.round((c.C / WINDOW) * 100)}% full` : ''
+    const chatK = c ? `${Math.round(c.C / 1000)}k` : ''
+    // The cache text in three lengths; the resting line picks the longest that fits (fitRest).
+    const cacheLong = c ? (left > 0 ? `cache warm ${minutes}m · ${chatK}` : `cache cold · ${chatK}`) : ''
+    const cacheMid = c ? (left > 0 ? `cache ${minutes}m` : 'cache cold') : ''
+    const cacheShort = c ? (left > 0 ? `${minutes}m` : 'cold') : ''
+    const cacheWords = cacheLong
     const cool = left > 0 && left < 5 * 60_000
     // What the last turn cost: its output and cache reads at the tier's price. ponytail: leaves out uncached input.
     const lastTier = l ? tierOf(l.model) : undefined
@@ -785,20 +807,28 @@ export const register: Register = (on, options) => {
         ),
       )
     // An alert row: the message on the left, its actions on the right.
+    // Its buttons drop under the message, aligned right, when there is no room beside it.
     const banner = (key: string, message: string, actions: unknown) => (
-      <Box key={key} flexDirection="row" justifyContent="space-between" gap={1}>
+      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" gap={1}>
         <Text>{message}</Text>
-        <Box gap={1}>{actions as any}</Box>
+        <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" gap={1}>
+          {actions as any}
+        </Box>
       </Box>
     )
+    const lastNote = lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''
+    // The resting line at this width: the head never shrinks, the reason fills the rest, the cache steps down.
+    const head = `arne  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`
+    const rest = fitRest(cols - 2, head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
     const why = judgeDown
       ? 'Laya not running, Haiku judged.'
       : !l
         ? 'No decision yet.'
         : pinned
         ? 'Pinned. arne keeps your pick until you choose Auto.'
-        : `${modelWord} because ${l.reason}.${lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''}`
-    const k = (n: number) => `${Math.round(n / 1000)}k`
+        : waiting
+          ? `${cap(plainReason(l.reason))}, so ${shortModel(waiting)} fits better. Switching now re-reads ${chatK} tokens, so arne stays on ${modelWord} until the cache cools.${lastNote}`
+          : `${modelWord} because ${plainReason(l.reason)}.${lastNote}`
     return (
       <Box flexDirection="column">
         {effortOn &&
@@ -823,8 +853,11 @@ export const register: Register = (on, options) => {
           !offer &&
           banner(
             'alert-heavy',
-            `Chat is ${k(c.C)} tokens, ${Math.round((c.C / WINDOW) * 100)}% full. Compacting keeps turns cheap.`,
-            <Button key="compact" plain label="Compact" onPress={() => compactNow($, '')} />,
+            `Chat is ${chatK} tokens. Compacting with ${cap(live.compactModel)} costs $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}; resending the whole chat costs $${dollars(costContinue(c.C, c.model, false)).toFixed(2)}.`,
+            [
+              <Button key="send-anyway" plain role="dismiss" label="Send anyway" onPress={() => undefined} />,
+              <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactNow($, '')} />,
+            ],
           )}
         {mode === 'paused' ? (
           <Box flexDirection="row" gap={1}>
@@ -840,28 +873,26 @@ export const register: Register = (on, options) => {
           </Box>
         ) : (
           <Box flexDirection="column">
-            <Box flexDirection="row" justifyContent="space-between">
+            <Box flexDirection="row" justifyContent="space-between" gap={1}>
               <Button key="band" plain onPress={toggle}>
                 <Text bold>arne</Text>
-                {'  '}
-                {l || band.state === 'routing'
-                  ? [
-                      <Text key="m">{modelWord.padEnd(6)}</Text>,
-                      <Text key="e" color="subtle">{effortWord ? ` · ${effortWord.padEnd(6)}` : ' '.repeat(9)}</Text>,
-                      <Text key="r" color="inactive">{`  ${reason}`}</Text>,
-                    ]
-                  : <Text color="subtle">auto</Text>}
-                <Text color="subtle">{open ? '  ▴' : '  ▾'}</Text>
+                {l || band.state === 'routing' ? (
+                  <Text>{`  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`}</Text>
+                ) : (
+                  <Text color="subtle">  auto</Text>
+                )}
+                {rest.reason !== '' && <Text color="inactive">{`  ${rest.reason}`}</Text>}
+                <Text color="subtle">{open ? ' ▴' : ' ▾'}</Text>
               </Button>
-              {cacheWords && (
+              {cacheWords !== '' && (
                 <Button key="band-cache" plain onPress={toggle}>
-                  <Text color={cool ? 'warning' : 'subtle'}>{cacheWords}</Text>
+                  <Text color={cool ? 'warning' : 'subtle'}>{rest.cache}</Text>
                 </Button>
               )}
             </Box>
             {open && (
               <Box flexDirection="column" gap={1}>
-                <Box flexDirection="row" gap={2}>
+                <Box flexDirection="row" flexWrap="wrap" gap={2}>
                   <Text color="subtle">Model</Text>
                   {segment(
                     'model',
@@ -871,27 +902,26 @@ export const register: Register = (on, options) => {
                   )}
                   <Text color="subtle">{pin?.tier ? 'pinned' : `picked ${modelWord}`}</Text>
                 </Box>
-                <Box flexDirection="row" gap={2}>
+                <Box flexDirection="row" flexWrap="wrap" gap={2}>
                   <Text color="subtle">Effort</Text>
                   {segment(
                     'effort',
                     [
                       { value: 'auto', label: 'Auto' },
-                      { value: 'low', label: 'Low' },
-                      { value: 'medium', label: 'Medium' },
-                      { value: 'high', label: 'High' },
-                      { value: 'xhigh', label: 'Extra high' },
-                      { value: 'max', label: 'Max' },
+                      ...(['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({
+                        value: v,
+                        label: narrow ? EFFORT_LABEL_SHORT[v] : EFFORT_LABEL[v],
+                      })),
                     ],
                     pin?.effort ?? 'auto',
                     v => void setPinPart($, { effort: v === 'auto' ? undefined : (v as Pin['effort']) }),
                   )}
                   <Text color="subtle">{pin?.effort ? 'pinned' : effortWord ? `picked ${effortWord}` : 'Haiku takes no effort'}</Text>
                 </Box>
-                <Box flexDirection="row" gap={2} justifyContent="space-between">
+                <Box flexDirection="row" flexWrap="wrap" gap={2} justifyContent="space-between">
                   <Text>{why}</Text>
                   {l && !pinned && thankedKey !== l.key && (
-                    <Box flexDirection="row" gap={1}>
+                    <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" gap={1}>
                       <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
                       <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
                     </Box>
@@ -901,9 +931,12 @@ export const register: Register = (on, options) => {
                 {picker && running && tierOf(picker) !== tierOf(running) && (
                   <Text color="subtle">The app's model menu still shows {shortModel(picker)}. arne runs this turn on {shortModel(running)}.</Text>
                 )}
-                <Box flexDirection="row" gap={2}>
-                  <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
-                  <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
+                <Box flexDirection="row" flexWrap="wrap" gap={2} justifyContent="space-between">
+                  <Box flexDirection="row" gap={2}>
+                    <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
+                    <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
+                  </Box>
+                  {!narrow && <Text color="subtle">Esc to close</Text>}
                 </Box>
               </Box>
             )}

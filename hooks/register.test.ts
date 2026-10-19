@@ -217,7 +217,40 @@ test('a step with no usage keeps the cache size, and the footer gets no status w
     // drain
   }
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
-  expect(await band.find({ type: 'Text', text: /25% full/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /cache warm \d+m · 50k/ })).toBeDefined()
   // The footer already shows the model and effort; arne adds nothing there while it runs.
   expect(s.statuses.filter(x => x.includes('·'))).toEqual([])
+})
+
+test('the band takes its width from bodyColumns: one resting row, short effort labels when narrow (17i)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  s.usage = { input_tokens: 50_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 'w1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  const wide = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
+  await $.ui.press({ plugin: 'arne', key: 'band' })
+  for (let i = 0; i < 2; i++) await clock.settle()
+  expect(await wide.find({ type: 'Button', text: 'Extra high' })).toBeDefined()
+  expect(await wide.find({ type: 'Text', text: 'Esc to close' })).toBeDefined()
+
+  // The panel stays open (its state is arne's), so the narrow mount shows it in the short forms.
+  const narrow = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 50 }, viewport: { columns: 50, rows: 24 } })
+  expect(await narrow.find({ type: 'Button', text: 'XHi' })).toBeDefined()
+  expect(await narrow.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
+  expect(await narrow.find({ type: 'Text', text: 'Esc to close' })).toBeUndefined()
+  // The resting line keeps the model at 50 columns: the reason and cache shorten, the head stays.
+  expect(await narrow.find({ type: 'Text', text: /Sonnet/ })).toBeDefined()
+})
+
+test('a chat past the heavy size gets its own banner with both costs, not a band row (17i)', async ($: any, on: any) => {
+  const { s } = engine(on, 'claude-sonnet-5-5')
+  s.usage = { input_tokens: 160_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 'h1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
+  expect(await band.find({ type: 'Text', text: /Chat is 160k tokens\. Compacting with Haiku costs \$[\d.]+; resending the whole chat costs \$[\d.]+\./ })).toBeDefined()
+  expect(await band.find({ type: 'Button', text: 'Compact and send' })).toBeDefined()
+  expect(await band.find({ type: 'Button', text: 'Send anyway' })).toBeDefined()
 })
