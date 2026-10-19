@@ -986,14 +986,14 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     // Narrow, as in the band: the short effort names, and a row's segments drop under its label.
-    const narrow = Number(e.viewport?.columns ?? 80) < 72
+    const narrow = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80) < 72
     const gui = e.surface !== 'terminal'
     const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
       const set = (value: unknown) => $.config.set({ key: `arne.${key}`, value })
       return (
         <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
           <Text>{label}</Text>
-          <Box flexDirection="row" flexShrink={0} flexGrow={1} justifyContent="flex-end" gap={1}>
+          <Box flexDirection="row" flexWrap="wrap" flexGrow={1} justifyContent="flex-end" columnGap={1}>
             {options.map(o =>
               o.value === live[key] ? (
                 <Button key={`${key}-${String(o.value)}`} variant="secondary" label={o.label} onPress={() => set(o.value)} />

@@ -269,3 +269,10 @@ test('on the desktop the resting line is styled Text and the chevron alone is th
   for (let i = 0; i < 2; i++) await clock.settle()
   expect(await band.find({ type: 'Button', text: 'Extra high' })).toBeDefined()
 })
+
+test('a narrow settings pane takes its width from bodyColumns and shows the short effort names (17m)', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'Pane', props: { bodyColumns: 40 }, requestId: 'arne-settings', viewport: { columns: 160, rows: 30 } })
+  expect(await pane.find({ type: 'Button', text: 'XHi' })).toBeDefined()
+  expect(await pane.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
+})
