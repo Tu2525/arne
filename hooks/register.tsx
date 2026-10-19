@@ -82,6 +82,35 @@ async function compactNow($: any, note: string): Promise<boolean> {
   }
 }
 
+// --- Handoff (step 17o) ---
+// A handoff is a compact whose summary also goes to a file and the clipboard, for a fresh chat.
+// It reuses the compact path (no API reads the chat's messages), so this chat is compacted too.
+const HANDOFF_FILE = 'arne-handoff.md'
+let handoffSurface: string | undefined // set while a handoff's compact runs; where its summary is copied
+
+async function handoffNow($: any, surface: string | undefined) {
+  if (handoffSurface !== undefined) return
+  handoffSurface = surface ?? ''
+  await compactNow($, '').finally(() => (handoffSurface = undefined))
+}
+
+// Called with the summary from session.compact while a handoff runs. Never archives or deletes the chat.
+async function saveHandoff($: any, summary: string) {
+  const text = `# Handoff
+
+${summary}
+`
+  const saved = await $.fs.write(HANDOFF_FILE, text).then(() => true, () => false)
+  const copied = (await $.ui.copy({ text, surface: handoffSurface || undefined }).catch(() => ({ isCopied: false }))).isCopied
+  $.ui.toast(
+    copied
+      ? `arne: handoff copied${saved ? ` and saved to ${HANDOFF_FILE}` : ''}. Paste it into a new chat; archive this one when you are done.`
+      : saved
+        ? `arne: handoff saved to ${HANDOFF_FILE}. Paste it into a new chat; archive this one when you are done.`
+        : 'arne: could not save or copy the handoff.',
+  )
+}
+
 // --- The held prompt (step 17a) ---
 // A prompt typed on a cold, big chat waits here until the person picks Compact & send or Send anyway.
 const CONTINUE_TEXT = 'Continue where you left off.'
@@ -506,6 +535,7 @@ export const register: Register = (on, options) => {
         { timeoutMs: 120_000 },
       )
       if (!r.isAnswered || !r.text) return next(e)
+      if (handoffSurface !== undefined) await saveHandoff($, r.text)
       const kept = e.messages.slice(-4)
       return {
         messages: [
@@ -853,6 +883,7 @@ export const register: Register = (on, options) => {
           !heldText &&
           banner('alert-cold', coldLine, [
             <Button key="compact" variant="primary" label="Compact" onPress={() => compactNow($, '')} />,
+            <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
             <Button key="continue" plain role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
           ])}
         {band.state === 'heavy' &&
@@ -863,6 +894,7 @@ export const register: Register = (on, options) => {
             `Chat is ${chatK} tokens. Compacting with ${cap(live.compactModel)} costs $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}; resending the whole chat costs $${dollars(costContinue(c.C, c.model, false)).toFixed(2)}.`,
             [
               <Button key="send-anyway" plain role="dismiss" label="Send anyway" onPress={() => undefined} />,
+              <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
               <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactNow($, '')} />,
             ],
           )}

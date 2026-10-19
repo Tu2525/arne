@@ -276,3 +276,14 @@ test('a narrow settings pane takes its width from bodyColumns and shows the shor
   expect(await pane.find({ type: 'Button', text: 'XHi' })).toBeDefined()
   expect(await pane.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
 })
+
+test('Handoff sits beside Compact and runs the compact that saves and copies the summary (17o)', async ($: any, on: any) => {
+  const { s } = engine(on, 'claude-sonnet-5-5')
+  s.usage = { input_tokens: 160_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 'ho1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
+  await $.ui.press({ plugin: 'arne', key: 'handoff' })
+  expect(s.ran).toContain('/compact ')
+})
