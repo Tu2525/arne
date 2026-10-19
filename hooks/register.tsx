@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { CACHE_TTL, contextOf, mmss, nextTtl, tierOf } from './econ'
+import { CACHE_TTL, contextOf, mmss, nextTtl, planSwitch, tierOf } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
 import type { Cache, Row } from '../types'
@@ -22,6 +22,9 @@ let prev: Decision | undefined
 let baseline: string | undefined // the session model arne last saw
 let paused = false
 let lastResponseAt: number | undefined
+let pendingSwitch: string | undefined // the model arne's own /model run is moving to
+let afterCompact = false // a compact just ran: the next prompt is a cache boundary
+let switchAfterTurn: string | undefined // the real /model to run once the turn is done
 // Subagent decisions, by agentId, so each step of a run uses its turn's choice.
 const agents = new Map<string, Decision | undefined>()
 
@@ -67,7 +70,7 @@ async function startLaya($: any) {
 }
 
 // $.fs has no append: read, then write the whole file. ponytail: O(n) per turn, fine below ~10k rows.
-async function appendLog($: any, row: Row & { text: string; agent?: string }) {
+async function appendLog($: any, row: Row & { text: string; agent?: string; decided?: string }) {
   try {
     const old: string = await $.fs.read(LOG_FILE).catch(() => '')
     await $.fs.write(LOG_FILE, old + JSON.stringify(row) + '\n')
@@ -102,6 +105,40 @@ export const register: Register = on => {
       const now = await $.clock.now()
       await update($, clockNow, () => now)
     })
+    return next(e)
+  })
+
+  // arne's own switch lands here as source "command" too, so it is told apart by its target.
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    const r = await next(e)
+    const isOwn = pendingSwitch !== undefined && tierOf(e.to_model) === tierOf(pendingSwitch)
+    pendingSwitch = undefined
+    if (!isOwn && (e.source === 'command' || e.source === 'picker' || e.source === 'sdk')) paused = true
+    baseline = e.to_model
+    return r
+  })
+
+  // /model waits for an idle session, so it runs from a timer, never inside the turn's own hooks.
+  on('turn.complete', async ($, e, next) => {
+    const r = await next(e)
+    const target = switchAfterTurn
+    if (e.agentId === undefined && target) {
+      switchAfterTurn = undefined
+      $.clock.after(0, async () => {
+        pendingSwitch = target
+        try {
+          await $.command.run({ command: 'model', args: target })
+        } catch {
+          pendingSwitch = undefined
+          $.ui.toast(`arne: could not switch /model to ${target}`)
+        }
+      })
+    }
+    return r
+  })
+
+  on('classic.PostCompact', async ($, e, next) => {
+    afterCompact = true
     return next(e)
   })
 
@@ -153,7 +190,7 @@ export const register: Register = on => {
         const warm = (['S', 'M', 'L'] as Tier[])
           .map(t => `${MODEL[t]} ${(c.warmUntil[t] ?? 0) > now ? `warm ${mmss(c.warmUntil[t]! - now)}` : 'cold'}`)
           .join(', ')
-        return { text: `arne debug: ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. paused ${paused}.` }
+        return { text: `arne debug: ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. paused ${paused}, switch queued ${switchAfterTurn ?? pendingSwitch ?? "none"}, after compact ${afterCompact}.` }
       }
       default:
         return {
@@ -195,14 +232,37 @@ export const register: Register = on => {
 
     if (e.agentId === undefined) {
       const model = await $.session.model()
-      // A model the user set by hand (/model) pauses arne. arne never sets the session model itself.
-      if (baseline !== undefined && model !== baseline) paused = true
+      // A model the user set by hand (/model) pauses arne. classic.PostModelSwitch catches it at once;
+      // this diff is the fallback, skipped while arne's own switch is still landing.
+      if (baseline !== undefined && model !== baseline && !pendingSwitch) paused = true
       baseline ??= model
 
-      current = s.enabled
+      const decided = s.enabled
         ? await route(e.text, { prev, paused, pin: s.pin ?? undefined, backends })
         : undefined
-      if (current) prev = current
+      if (decided) prev = decided
+      current = decided
+      const chat = tierOf(model)
+      if (decided && chat) {
+        const c = await read($, cache)
+        const plan = planSwitch({
+          decided: decided.tier,
+          chat,
+          C: c?.C ?? 0,
+          warmUntil: c?.warmUntil ?? {},
+          now: await $.clock.now(),
+          afterCompact,
+        })
+        // A pin is the person's call: it skips stickiness, but the real /model still waits for a boundary.
+        if (plan.why === 'sticky' && decided.source !== 'pin') {
+          current = { ...decided, tier: chat, reason: `${decided.reason}; sticky (cache warm)` }
+        }
+        // This turn's requests already go to the new tier; the real /model follows once the turn ends.
+        if (plan.real) {
+          afterCompact = false
+          switchAfterTurn = MODEL[decided.tier]
+        }
+      }
       $.ui.status(!s.enabled ? 'arne off' : paused ? 'arne paused (manual /model)' : undefined)
       if (current) {
         const row: Row = {
@@ -216,7 +276,7 @@ export const register: Register = on => {
         }
         await update($, last, () => row)
         await update($, log, list => [...list, row].slice(-200))
-        await appendLog($, { ...row, text: e.text })
+        await appendLog($, { ...row, text: e.text, decided: decided ? MODEL[decided.tier] : undefined })
       }
     } else {
       const agent = (await $.agent.list()).find(a => a.id === e.agentId)

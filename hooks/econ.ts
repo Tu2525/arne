@@ -103,3 +103,26 @@ export const mmss = (ms: number) => {
   const s = Math.max(0, Math.ceil(ms / 1000))
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
+
+export type SwitchPlan = { tier: Tier; real: boolean; why: 'same' | 'boundary' | 'worth' | 'sticky' }
+
+/**
+ * Where this prompt's requests go, and whether the real /model moves.
+ * The real model changes only at a cache boundary (chat model cold, or right after a compact).
+ * While warm, requests stay on the chat's model unless routeWorth says the move pays.
+ */
+export function planSwitch(p: {
+  decided: Tier
+  chat: Tier
+  C: number
+  warmUntil: Partial<Record<Tier, number>>
+  now: number
+  afterCompact: boolean
+}): SwitchPlan {
+  const { decided, chat, C, warmUntil, now } = p
+  if (decided === chat) return { tier: chat, real: false, why: 'same' }
+  const warm = (t: Tier) => (warmUntil[t] ?? 0) > now
+  if (p.afterCompact || !warm(chat)) return { tier: decided, real: true, why: 'boundary' }
+  if (routeWorth(decided, chat, C, { to: warm(decided), inUse: true })) return { tier: decided, real: false, why: 'worth' }
+  return { tier: chat, real: false, why: 'sticky' }
+}

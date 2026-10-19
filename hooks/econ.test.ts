@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, routeWorth, tierOf } from './econ'
+import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, tierOf } from './econ'
 
 const near = (got: number, want: number) => expect(Math.abs(got - want) / want <= 0.05).toBe(true)
 
@@ -35,4 +35,13 @@ test('cache clock helpers', () => {
   expect(tierOf('claude-sonnet-5-5')).toBe('M')
   expect(mmss(60 * 60_000)).toBe('60:00')
   expect(mmss(61_500)).toBe('1:02')
+})
+
+test('planSwitch: real /model moves only at a boundary', () => {
+  const base = { decided: 'M' as const, chat: 'L' as const, C: 80_000, now: 1000, afterCompact: false }
+  expect(planSwitch({ ...base, warmUntil: {} })).toEqual({ tier: 'M', real: true, why: 'boundary' })
+  expect(planSwitch({ ...base, warmUntil: { L: 5000 } })).toEqual({ tier: 'L', real: false, why: 'sticky' })
+  expect(planSwitch({ ...base, warmUntil: { L: 5000 }, afterCompact: true }).real).toBe(true)
+  expect(planSwitch({ ...base, C: 0, warmUntil: { L: 5000 } }).why).toBe('worth')
+  expect(planSwitch({ ...base, decided: 'L', warmUntil: {} }).why).toBe('same')
 })
