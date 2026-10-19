@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { CACHE_TTL, contextOf, mmss, nextTtl, planSwitch, tierOf } from './econ'
+import { CACHE_TTL, coldAdvice, contextOf, dollars, mmss, nextTtl, planSwitch, summaryPrompt, tierOf } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
 import type { Cache, Row } from '../types'
@@ -15,6 +15,22 @@ const last = atom({ plugin: 'arne', key: 'last' } as const, null)
 const log = atom({ plugin: 'arne', key: 'log' } as const, [])
 const cache = atom({ plugin: 'arne', key: 'cache' } as const, null)
 const clockNow = atom({ plugin: 'arne', key: 'now' } as const, 0)
+const coldDismissed = atom({ plugin: 'arne', key: 'coldDismissed' } as const, 0)
+
+// A cold chat under this size is cheap to re-warm: no offer.
+const COLD_MIN_TOKENS = 30_000
+
+const rowLabel = (row: { action: string; to?: string }) =>
+  row.action === 'switch' ? `Switch to ${row.to}` : row.action === 'compact' ? 'Compact (Haiku summary)' : row.action === 'handoff' ? 'Handoff' : 'Continue'
+
+// /compact runs as the app's own command, so the idle wait and the app's own summary path apply.
+async function compactNow($: any, note: string) {
+  try {
+    await $.command.run({ command: 'compact', args: note.trim() })
+  } catch {
+    $.ui.toast('arne: compact failed; try again when the session is idle')
+  }
+}
 
 // Module state. Reset on a reload, like every module variable.
 let current: Decision | undefined
@@ -116,7 +132,7 @@ export const register: Register = on => {
     if (!isOwn && (e.source === 'command' || e.source === 'picker' || e.source === 'sdk')) paused = true
     baseline = e.to_model
     return r
-  })
+  }).catch(($, e, next) => next(e))
 
   // /model waits for an idle session, so it runs from a timer, never inside the turn's own hooks.
   on('turn.complete', async ($, e, next) => {
@@ -137,10 +153,36 @@ export const register: Register = on => {
     return r
   })
 
+  // Haiku writes the summary for every compaction. If Haiku fails, the engine's own compaction stands.
+  on('session.compact', async ($, e, next) => {
+    if (e.trigger === 'precompute' || e.messages.length < 4) return next(e)
+    try {
+      const r = await $.model.complete(
+        {
+          model: 'haiku',
+          prompt: summaryPrompt(e.messages),
+          system: 'Summarize this coding conversation for its next turn: goal, decisions and why, files changed (paths), exact errors, open questions, next step. Plain text, under 1500 words.' + (e.instructions ? ` Keep: ${e.instructions}` : ''),
+          effort: 'low',
+        },
+        { timeoutMs: 120_000 },
+      )
+      if (!r.isAnswered || !r.text) return next(e)
+      const kept = e.messages.slice(-4)
+      return {
+        messages: [
+          { role: 'user', text: `Summary of the conversation so far (written by Haiku for arne):\n\n${r.text}`, toolUses: [] },
+          ...kept,
+        ],
+      }
+    } catch {
+      return next(e)
+    }
+  }).catch(($, e, next) => next(e))
+
   on('classic.PostCompact', async ($, e, next) => {
     afterCompact = true
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'arne' }, async ($, e) => {
     const [sub, ...rest] = e.args.trim().split(/\s+/)
@@ -322,13 +364,39 @@ export const register: Register = on => {
     if (!l && !c) return next(e)
     const now = await read($, clockNow)
     const left = c ? (c.warmUntil[c.model] ?? 0) - now : 0
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const isCold = !!c && left <= 0 && c.C >= COLD_MIN_TOKENS
+    // Hidden until the cache warms again: the dismissal remembers which cold spell it was.
+    const dismissed = c !== null && (await read($, coldDismissed)) === (c.warmUntil[c.model] ?? 0)
+    const offer = isCold && !dismissed ? coldAdvice(c!.C, c!.model, c!.warmUntil, now) : undefined
     return (
-      <Box>
+      <Box flexDirection="column">
         <Text dimColor>
           arne: {l ? `${l.model} · ${l.effort} (${l.source})` : 'not routing'}
           {c ? ` · cache ${left > 0 ? mmss(left) : 'cold'} · ${Math.round(c.C / 1000)}k` : ''}
         </Text>
+        {offer && (
+          <Box flexDirection="column">
+            <Text>Cache is cold on a {Math.round(c!.C / 1000)}k chat. Next message, by cost (first request):</Text>
+            {offer.rows.slice(0, 3).map(row => (
+              <Text key={`${row.action}-${row.to ?? ''}`} dimColor>
+                {rowLabel(row)}: ${dollars(row.first).toFixed(3)}
+              </Text>
+            ))}
+            <Box>
+              <Button
+                key="compact"
+                label={offer.best.action === 'compact' ? 'Compact (cheapest)' : 'Compact'}
+                onPress={() => compactNow($, '')}
+              />
+              <Button
+                key="continue"
+                label="Continue"
+                onPress={() => update($, coldDismissed, () => c!.warmUntil[c!.model] ?? 0)}
+              />
+            </Box>
+          </Box>
+        )}
       </Box>
     )
   })

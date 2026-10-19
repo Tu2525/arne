@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, tierOf } from './econ'
+import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf } from './econ'
 
 const near = (got: number, want: number) => expect(Math.abs(got - want) / want <= 0.05).toBe(true)
 
@@ -44,4 +44,9 @@ test('planSwitch: real /model moves only at a boundary', () => {
   expect(planSwitch({ ...base, warmUntil: { L: 5000 }, afterCompact: true }).real).toBe(true)
   expect(planSwitch({ ...base, C: 0, warmUntil: { L: 5000 } }).why).toBe('worth')
   expect(planSwitch({ ...base, decided: 'L', warmUntil: {} }).why).toBe('same')
+})
+
+test('summaryPrompt keeps the tail when long', () => {
+  expect(summaryPrompt([{ role: 'user', text: 'hi' }])).toBe('user: hi')
+  expect(summaryPrompt([{ role: 'user', text: 'abcdef' }], 3)).toBe('def')
 })

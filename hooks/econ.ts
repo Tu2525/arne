@@ -126,3 +126,9 @@ export function planSwitch(p: {
   if (routeWorth(decided, chat, C, { to: warm(decided), inUse: true })) return { tier: decided, real: false, why: 'worth' }
   return { tier: chat, real: false, why: 'sticky' }
 }
+
+/** The prompt for Haiku's summary: the transcript as text, the last part if it is long. */
+export function summaryPrompt(messages: readonly { role: string; text: string }[], maxChars = 300_000): string {
+  const all = messages.map(m => `${m.role}: ${m.text}`).join('\n\n')
+  return all.length > maxChars ? all.slice(-maxChars) : all
+}
