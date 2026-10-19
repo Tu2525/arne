@@ -17,6 +17,6 @@ export type Cache = {
 
 declare module 'claude-code' {
   interface PluginState {
-    arne: { last: Row | null; log: Row[]; cache: Cache | null; now: number; coldDismissed: number }
+    arne: { last: Row | null; log: Row[]; cache: Cache | null; now: number; coldDismissed: number; routing: boolean; isOff: boolean; shown: { state: string; until: number } | null }
   }
 }

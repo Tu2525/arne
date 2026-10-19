@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf } from './econ'
+import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText } from './econ'
 
 const near = (got: number, want: number) => expect(Math.abs(got - want) / want <= 0.05).toBe(true)
 
@@ -49,4 +49,15 @@ test('planSwitch: real /model moves only at a boundary', () => {
 test('summaryPrompt keeps the tail when long', () => {
   expect(summaryPrompt([{ role: 'user', text: 'hi' }])).toBe('user: hi')
   expect(summaryPrompt([{ role: 'user', text: 'abcdef' }], 3)).toBe('def')
+})
+
+test('bandText states', () => {
+  const base = { off: false, paused: false, routing: false, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 38 * 60_000 + 10_000, C: 80_000 }
+  expect(bandText(base).text).toBe('Sonnet · med · cache 38:10 · ◔ 40%')
+  expect(bandText(base).short).toBe('arne Sonnet·med')
+  expect(bandText({ ...base, routing: true }).state).toBe('routing')
+  expect(bandText({ ...base, paused: true }).state).toBe('paused')
+  expect(bandText({ ...base, warmLeftMs: 0, C: 120_000 }).state).toBe('cold')
+  expect(bandText({ ...base, C: 160_000 }).state).toBe('heavy')
+  expect(bandText({ ...base, off: true }).state).toBe('off')
 })

@@ -132,3 +132,42 @@ export function summaryPrompt(messages: readonly { role: string; text: string }[
   const all = messages.map(m => `${m.role}: ${m.text}`).join('\n\n')
   return all.length > maxChars ? all.slice(-maxChars) : all
 }
+
+// --- Band indicator (step 14) ---
+
+export const WINDOW = 200_000 // context window used for the ◔ fill; ponytail: fixed, read the model's limit if it changes
+export const HEAVY_TOKENS = 150_000 // over this, the band warns that the chat is large
+export type BandState = 'routing' | 'off' | 'paused' | 'cold' | 'heavy' | 'normal'
+export type BandInput = {
+  off: boolean
+  paused: boolean
+  routing: boolean
+  model: string // full model id of the last decision
+  effort?: string
+  warmLeftMs: number // ms until the chat's model cache goes cold; 0 or less = cold
+  C: number
+  flash?: boolean
+}
+
+const SHORT: Record<string, string> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus' }
+const EFFORT_SHORT: Record<string, string> = { low: 'low', medium: 'med', high: 'high', xhigh: 'xhi', max: 'max' }
+export const shortModel = (model: string) => SHORT[(/haiku|sonnet|opus/.exec(model)?.[0] ?? '')] ?? model
+export const shortEffort = (effort?: string) => (effort ? EFFORT_SHORT[effort] ?? effort : '-')
+
+/** The band's state and its two texts: `text` for the band, `short` for the status line. */
+export function bandText(i: BandInput): { state: BandState; text: string; short: string } {
+  const label = `${shortModel(i.model)} · ${shortEffort(i.effort)}`
+  const k = `${Math.round(i.C / 1000)}k`
+  const pct = `${Math.round((i.C / WINDOW) * 100)}%`
+  const flash = i.flash ? ' ▲' : ''
+  if (i.off) return { state: 'off', text: 'arne off', short: 'arne off' }
+  if (i.routing) return { state: 'routing', text: 'routing…', short: 'arne …' }
+  if (i.paused) return { state: 'paused', text: `paused · ${label} (manual /model; /arne on resumes)`, short: 'arne paused' }
+  if (i.C > 0 && i.warmLeftMs <= 0) return { state: 'cold', text: `cold · ${k} · see the offer below`, short: `arne cold ${k}` }
+  if (i.C >= HEAVY_TOKENS) return { state: 'heavy', text: `${label} · heavy ${k} · ◔ ${pct}`, short: `arne ${shortModel(i.model)}·${shortEffort(i.effort)} heavy` }
+  return {
+    state: 'normal',
+    text: `${label} · cache ${mmss(i.warmLeftMs)} · ◔ ${pct}${flash}`,
+    short: `arne ${shortModel(i.model)}·${shortEffort(i.effort)}${flash}`,
+  }
+}

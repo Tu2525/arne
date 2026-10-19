@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { CACHE_TTL, coldAdvice, contextOf, dollars, mmss, nextTtl, planSwitch, summaryPrompt, tierOf } from './econ'
+import { bandText, CACHE_TTL, coldAdvice, contextOf, dollars, mmss, nextTtl, planSwitch, summaryPrompt, tierOf } from './econ'
+import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
 import type { Cache, Row } from '../types'
@@ -16,6 +17,10 @@ const log = atom({ plugin: 'arne', key: 'log' } as const, [])
 const cache = atom({ plugin: 'arne', key: 'cache' } as const, null)
 const clockNow = atom({ plugin: 'arne', key: 'now' } as const, 0)
 const coldDismissed = atom({ plugin: 'arne', key: 'coldDismissed' } as const, 0)
+const routing = atom({ plugin: 'arne', key: 'routing' } as const, false)
+const isOff = atom({ plugin: 'arne', key: 'isOff' } as const, false)
+const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
+const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
 
 // A cold chat under this size is cheap to re-warm: no offer.
 const COLD_MIN_TOKENS = 30_000
@@ -225,6 +230,17 @@ export const register: Register = on => {
       case 'log':
         await $.ui.open({ id: PANE, title: 'arne log' })
         return { text: 'arne log opened.' }
+      case 'show': {
+        // Draws the band in one state for a few seconds, to check each look without a real trigger.
+        const state = rest[0] as BandState
+        if (rest[0] === 'live') {
+          await update($, shown, () => null)
+          return { text: 'Band shows the live state.' }
+        }
+        if (!STATES.includes(state)) return { text: `Usage: /arne show live|${STATES.join('|')}` }
+        await update($, shown, () => ({ state, until: 0 }))
+        return { text: `Band shows a sample ${state} state. /arne show live goes back.` }
+      }
       case 'debug': {
         const c = await read($, cache)
         const now = await $.clock.now()
@@ -243,6 +259,10 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     const s = await settings($)
+    if (e.agentId === undefined) {
+      await update($, routing, () => true)
+      await update($, isOff, () => !s.enabled)
+    }
     const haiku: Backend = {
       name: 'haiku',
       ask: async text => {
@@ -284,6 +304,7 @@ export const register: Register = on => {
         : undefined
       if (decided) prev = decided
       current = decided
+      await update($, routing, () => false)
       const chat = tierOf(model)
       if (decided && chat) {
         const c = await read($, cache)
@@ -341,7 +362,13 @@ export const register: Register = on => {
     const routed = decision
       ? { ...e, model: MODEL[decision.tier], effort: decision.tier === 'S' ? undefined : decision.effort }
       : e
-    if (isMain && decision) $.ui.status(`arne ${decision.source} · ${routed.model} · ${routed.effort ?? '-'}`)
+    if (isMain && decision) {
+      const c = await read($, cache)
+      const now = await $.clock.now()
+      const tier = tierOf(routed.model)
+      const warmLeftMs = tier ? (c?.warmUntil[tier] ?? 0) - now : 0
+      $.ui.status(bandText({ off: false, paused, routing: false, model: routed.model, effort: decision.effort, warmLeftMs, C: c?.C ?? 0 }).short)
+    }
 
     const r = yield* next(routed)
     if (isMain) await cacheTouched($, routed.model, r.usage)
@@ -361,20 +388,38 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const l = await read($, last)
     const c = await read($, cache)
-    if (!l && !c) return next(e)
+    const forced = await read($, shown)
+    if (!l && !c && !forced) return next(e)
     const now = await read($, clockNow)
-    const left = c ? (c.warmUntil[c.model] ?? 0) - now : 0
+    const tier = c ? c.model : undefined
+    const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
     const { Box, Button, Text } = $.ui.resolve(e)
     const isCold = !!c && left <= 0 && c.C >= COLD_MIN_TOKENS
     // Hidden until the cache warms again: the dismissal remembers which cold spell it was.
     const dismissed = c !== null && (await read($, coldDismissed)) === (c.warmUntil[c.model] ?? 0)
     const offer = isCold && !dismissed ? coldAdvice(c!.C, c!.model, c!.warmUntil, now) : undefined
+    const sample: Record<BandState, Parameters<typeof bandText>[0]> = {
+      routing: { off: false, paused: false, routing: true, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 0, C: 0 },
+      off: { off: true, paused: false, routing: false, model: 'claude-sonnet-5-5', warmLeftMs: 0, C: 0 },
+      paused: { off: false, paused: true, routing: false, model: 'claude-opus-5-5', effort: 'high', warmLeftMs: 0, C: 0 },
+      cold: { off: false, paused: false, routing: false, model: 'claude-opus-5-5', effort: 'high', warmLeftMs: 0, C: 120_000 },
+      heavy: { off: false, paused: false, routing: false, model: 'claude-opus-5-5', effort: 'high', warmLeftMs: 600_000, C: 160_000 },
+      normal: { off: false, paused: false, routing: false, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 38 * 60_000, C: 80_000 },
+    }
+    const band = forced
+      ? bandText(sample[forced.state as BandState])
+      : bandText({
+          off: await read($, isOff),
+          paused,
+          routing: await read($, routing),
+          model: l ? l.model : (c ? MODEL[c.model] : MODEL.M),
+          effort: l?.effort,
+          warmLeftMs: left,
+          C: c?.C ?? 0,
+        })
     return (
       <Box flexDirection="column">
-        <Text dimColor>
-          arne: {l ? `${l.model} · ${l.effort} (${l.source})` : 'not routing'}
-          {c ? ` · cache ${left > 0 ? mmss(left) : 'cold'} · ${Math.round(c.C / 1000)}k` : ''}
-        </Text>
+        <Text dimColor>arne: {band.text}</Text>
         {offer && (
           <Box flexDirection="column">
             <Text>Cache is cold on a {Math.round(c!.C / 1000)}k chat. Next message, by cost (first request):</Text>
