@@ -825,8 +825,8 @@ export const register: Register = (on, options) => {
     const lastNote = lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''
     // The resting line at this width: the head never shrinks, the reason fills the rest, the cache steps down.
     const head = `arne  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`
-    // The card's border and padding take 4 columns, the chevron 2, the cache dot 2.
-    const rest = fitRest(cols - (c ? 8 : 6), head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
+    // The card's border and padding take 4 columns, the chevron 2, the cache dot 2, the arne mark 2.
+    const rest = fitRest(cols - (c ? 10 : 8), head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
     const why = judgeDown
       ? 'Laya not running, Haiku judged.'
       : !l
@@ -869,12 +869,14 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
           {mode === 'paused' ? (
             <Box flexDirection="row" gap={1}>
+              <Text color="claude">◆</Text>
               <Text>arne</Text>
               <Text color="subtle">paused · you picked {appModel ? shortModel(appModel) : 'a model'}</Text>
               <Button key="auto" plain label="Resume" onPress={() => toggleAuto($)} />
             </Box>
           ) : mode === 'off' ? (
             <Box flexDirection="row" gap={1}>
+              <Text color="claude">◆</Text>
               <Text>arne</Text>
               <Text color="subtle">off</Text>
               <Button key="auto" plain label="Turn on" onPress={() => toggleAuto($)} />
@@ -883,6 +885,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column">
               {gui ? (
                 <Box key="band-line" flexDirection="row" alignItems="center" gap={1}>
+                  <Text color="claude">◆</Text>
                   <Text bold>arne</Text>
                   {l || band.state === 'routing' ? (
                     <Text>{`${modelWord}${effortWord ? ` · ${effortWord}` : ''}`}</Text>
@@ -899,6 +902,7 @@ export const register: Register = (on, options) => {
               ) : (
               <Box flexDirection="row" justifyContent="space-between" gap={1}>
                 <Button key="band" plain onPress={toggle}>
+                  <Text color="claude">◆ </Text>
                   <Text bold>arne</Text>
                   {l || band.state === 'routing' ? (
                     <Text>{`  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`}</Text>
@@ -914,6 +918,10 @@ export const register: Register = (on, options) => {
                   <Text color="subtle">{open ? ' ▴' : ' ▾'}</Text>
                 </Button>
               </Box>
+              )}
+              {/* Plugins cannot move the app's model menu, so a mismatch shows on the band itself, not only in the panel. */}
+              {picker && running && tierOf(picker) !== tierOf(running) && (
+                <Text color="warning" wrap="truncate-end">{`⇄ The app's model menu shows ${shortModel(picker)}; arne runs ${shortModel(running)}. Plugins can't change that menu.`}</Text>
               )}
               {open && (
                 <Box flexDirection="column" gap={1} marginTop={1}>
@@ -962,9 +970,6 @@ export const register: Register = (on, options) => {
                     )}
                     {l && !pinned && thankedKey === l.key && <Text color="subtle">Logged. arne learns from this.</Text>}
                   </Box>
-                  {picker && running && tierOf(picker) !== tierOf(running) && (
-                    <Text color="subtle">The app's model menu still shows {shortModel(picker)}. arne runs this turn on {shortModel(running)}.</Text>
-                  )}
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Box flexDirection="row" gap={2}>
                       <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />

@@ -157,7 +157,7 @@ test('the band says so when arne runs a model the app picker does not show (17f)
   for (let i = 0; i < 3; i++) await clock.settle()
   // arne's own /model, as the app reports it.
   await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'claude-opus-5-5', source: 'command' })
-  expect(await ui.find({ type: 'Text', text: /The app's model menu still shows Sonnet. arne runs this turn on Opus/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The app's model menu shows Sonnet; arne runs Opus/ })).toBeDefined()
 })
 
 test('a pin of xhigh passes the default ceiling and reaches the native /effort and the request (17h)', async ($: any, on: any) => {
