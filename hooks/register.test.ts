@@ -59,20 +59,15 @@ test('a model move runs the real /model first, then sends the prompt exactly onc
   expect(s.sent).toEqual(['claude-haiku-5-5'])
 })
 
-test('an effort change runs the native /effort first, once, and not again while it matches (17c)', async ($: any, on: any) => {
+test('an effort change is silent: no /effort typed, the prompt is not dropped (17c)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
   await $.command.run({ command: 'arne', args: 'pin opus high' })
   await clock.settle()
   s.ran.length = 0
   const r = await $.prompt.submit(typed('refactor the parser'))
-  expect('drop' in r && r.drop !== undefined).toBe(true)
+  expect('drop' in r).toBe(false)
   await clock.settle()
-  expect(s.ran).toEqual(['/effort high'])
-  expect(s.entered).toEqual(['refactor the parser'])
-  // Native effort now matches: the next prompt goes straight through.
-  const r2 = await $.prompt.submit(typed('and the lexer'))
-  expect('drop' in r2).toBe(false)
-  expect(s.ran).toEqual(['/effort high'])
+  expect(s.ran).toEqual([])
 })
 
 test('a cold, big chat holds the prompt; Send anyway sends it once, however often it is pressed (17a)', async ($: any, on: any) => {
@@ -160,14 +155,14 @@ test('the band says so when arne runs a model the app picker does not show (17f)
   expect(await ui.find({ type: 'Text', text: /The app's model menu shows Sonnet; arne runs Opus/ })).toBeDefined()
 })
 
-test('a pin of xhigh passes the default ceiling and reaches the native /effort and the request (17h)', async ($: any, on: any) => {
+test('a pin of xhigh passes the default ceiling and is kept (17h)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
   await $.command.run({ command: 'arne', args: 'pin opus xhigh' })
   for (let i = 0; i < 3; i++) await clock.settle()
   s.ran.length = 0
   await $.prompt.submit(typed('refactor the parser'))
   await clock.settle()
-  expect(s.ran).toEqual(['/effort xhigh'])
+  expect(s.ran).toEqual([])
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned opus · xhigh')
 })
 
@@ -252,7 +247,7 @@ test('a chat past the heavy size gets its own banner with both costs, not a band
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
   expect(await band.find({ type: 'Text', text: /Chat is 160k tokens\. Compacting with Haiku costs \$[\d.]+; resending the whole chat costs \$[\d.]+\./ })).toBeDefined()
   expect(await band.find({ type: 'Button', text: 'Compact and send' })).toBeDefined()
-  expect(await band.find({ type: 'Button', text: 'Send anyway' })).toBeDefined()
+  expect(await band.find({ type: 'Button', text: 'Dismiss' })).toBeDefined()
 })
 
 test('on the desktop the resting line is styled Text and the chevron alone is the button (17l)', async ($: any, on: any) => {
@@ -286,4 +281,22 @@ test('Handoff sits beside Compact and runs the compact that saves and copies the
   await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
   await $.ui.press({ plugin: 'arne', key: 'handoff' })
   expect(s.ran).toContain('/compact ')
+})
+
+test('an Auto pick says so on the band: auto, the model, routed; a pin does not', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  on('turn.start', (_$: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  await $.prompt.submit(typed('what is a mutex'))
+  for (let i = 0; i < 3; i++) await clock.settle()
+  await $.turn.start({ text: 'what is a mutex', turnId: 'r1' })
+  for await (const _ of $.turn.step({ turnId: 'r1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
+  expect(await band.find({ type: 'Text', text: /auto · Haiku.*\(routed\)/ })).toBeDefined()
+  await band.unmount()
+  await $.command.run({ command: 'arne', args: 'pin opus high' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  const pinned = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
+  expect(await pinned.find({ type: 'Text', text: /\(routed\)/ }).catch(() => undefined)).toBeUndefined()
 })

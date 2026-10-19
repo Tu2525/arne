@@ -138,6 +138,14 @@ async function compactAndSend($: any) {
   else await update($, held, () => text)
 }
 
+// Heavy banner: nothing is held (the prompt was never blocked), so after compacting arne sends "Continue".
+async function compactThenContinue($: any) {
+  if (compactSending) return
+  compactSending = true
+  const ok = await compactNow($, '').finally(() => (compactSending = false))
+  if (ok) await routeAndSend($, CONTINUE_TEXT)
+}
+
 async function sendAnyway($: any) {
   const text = await read($, held)
   if (!text) return
@@ -315,12 +323,26 @@ async function startLaya($: any) {
 }
 
 // laya -> haiku -> prev -> default. The chain falls through silently.
+// What the project is, so Haiku judges "how hard is this prompt" for this codebase, not in a vacuum.
+// Read once per load from CLAUDE.md, else README.md, in the project folder. ponytail: stale until reload.
+let projectCtx: Promise<string> | undefined
+function projectContext($: any): Promise<string> {
+  projectCtx ??= (async () => {
+    for (const f of ['CLAUDE.md', 'README.md']) {
+      const t: string = await $.fs.read(f).catch(() => '')
+      if (t.trim()) return `\n\nProject context (${f}, for judging difficulty; do not answer it):\n${t.slice(0, 2500)}`
+    }
+    return ''
+  })()
+  return projectCtx
+}
+
 function backendsOf($: any, backend: string): Backend[] {
   const haiku: Backend = {
     name: 'haiku',
     ask: async text => {
       const r = await $.model.complete(
-        { model: 'haiku', prompt: text.slice(0, 4000), system: SYSTEM, effort: 'low' },
+        { model: 'haiku', prompt: text.slice(0, 4000), system: SYSTEM + (await projectContext($)), effort: 'low' },
         { timeoutMs: 3000 },
       )
       return r.isAnswered ? parseVerdict(r.text) : undefined
@@ -384,9 +406,10 @@ async function switchTarget($: any, d: Decision): Promise<string | undefined> {
 
 // The effort the native /effort should move to before this prompt, or undefined to stay. Haiku takes
 // none, and while effortless is on the effort is its to set.
-async function effortTarget($: any, d: Decision, model: string): Promise<Decision['effort'] | undefined> {
-  if (tierOf(model) === 'S' || (await read($, effortless))) return undefined
-  return d.effort === (await read($, appEffort)) ? undefined : d.effort
+// Effort is never typed as /effort any more: turn.step rewrites it silently on every request, so the
+// prompt is not dropped and re-sent for it. ponytail: the app's effort control keeps showing its old value.
+async function effortTarget(_$: any, _d: Decision, _model: string): Promise<Decision['effort'] | undefined> {
+  return undefined
 }
 
 // Runs the real /model and /effort, then sends the dropped prompt once, whether or not they worked.
@@ -822,6 +845,9 @@ export const register: Register = (on, options) => {
           : l
             ? plainReason(l.reason)
             : ''
+    // Auto picked this model and effort (no pin, no wait on the cache): the band says it was routed.
+    const routedNow = Boolean(l) && !pinned && !waiting
+    const modelText = `${routedNow ? 'auto · ' : ''}${modelWord}${effortWord ? ` · ${effortWord}` : ''}${routedNow && !narrow ? ' (routed)' : ''}`
     const minutes = Math.ceil(left / 60_000)
     const chatK = c ? `${Math.round(c.C / 1000)}k` : ''
     // The cache text in three lengths; the resting line picks the longest that fits (fitRest).
@@ -854,7 +880,7 @@ export const register: Register = (on, options) => {
     )
     const lastNote = lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''
     // The resting line at this width: the head never shrinks, the reason fills the rest, the cache steps down.
-    const head = `arne  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`
+    const head = `arne  ${modelText}`
     // The card's border and padding take 4 columns, the chevron 2, the cache dot 2, the arne mark 2.
     const rest = fitRest(cols - (c ? 10 : 8), head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
     const why = judgeDown
@@ -893,9 +919,9 @@ export const register: Register = (on, options) => {
             'alert-heavy',
             `Chat is ${chatK} tokens. Compacting with ${cap(live.compactModel)} costs $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}; resending the whole chat costs $${dollars(costContinue(c.C, c.model, false)).toFixed(2)}.`,
             [
-              <Button key="send-anyway" plain role="dismiss" label="Send anyway" onPress={() => undefined} />,
+              <Button key="dismiss" plain role="dismiss" label="Dismiss" onPress={() => undefined} />,
               <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
-              <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactNow($, '')} />,
+              <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactThenContinue($)} />,
             ],
           )}
         <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
@@ -920,7 +946,7 @@ export const register: Register = (on, options) => {
                   <Text color="claude">◆</Text>
                   <Text bold>arne</Text>
                   {l || band.state === 'routing' ? (
-                    <Text>{`${modelWord}${effortWord ? ` · ${effortWord}` : ''}`}</Text>
+                    <Text>{modelText}</Text>
                   ) : (
                     <Text color="subtle">auto</Text>
                   )}
@@ -937,7 +963,7 @@ export const register: Register = (on, options) => {
                   <Text color="claude">◆ </Text>
                   <Text bold>arne</Text>
                   {l || band.state === 'routing' ? (
-                    <Text>{`  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`}</Text>
+                    <Text>{`  ${modelText}`}</Text>
                   ) : (
                     <Text color="subtle">  auto</Text>
                   )}
