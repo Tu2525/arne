@@ -199,7 +199,8 @@ export const register: Register = on => {
     const decision = e.agentId === undefined ? current : agents.get(e.agentId)
     if (!decision) return yield* next(e)
 
-    const routed = { ...e, model: MODEL[decision.tier], effort: decision.effort }
+    // Haiku takes no effort setting.
+    const routed = { ...e, model: MODEL[decision.tier], effort: decision.tier === 'S' ? undefined : decision.effort }
     if (e.agentId === undefined) {
       $.ui.status(`arne ${decision.source} · ${routed.model} · ${routed.effort}`)
     }
