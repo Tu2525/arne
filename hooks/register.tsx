@@ -812,7 +812,7 @@ export const register: Register = (on, options) => {
     // An alert row: the message on the left, its actions on the right.
     // Its buttons drop under the message, aligned right, when there is no room beside it.
     const banner = (key: string, message: string, actions: unknown) => (
-      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2} borderStyle="round" borderColor="claude" paddingX={1}>
+      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2} borderStyle="round" borderColor="warning" paddingX={1}>
         <Text>{message}</Text>
         <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
           {actions as any}
@@ -822,8 +822,8 @@ export const register: Register = (on, options) => {
     const lastNote = lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''
     // The resting line at this width: the head never shrinks, the reason fills the rest, the cache steps down.
     const head = `arne  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`
-    // The card's border and padding take 4 columns, the chevron 2.
-    const rest = fitRest(cols - 6, head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
+    // The card's border and padding take 4 columns, the chevron 2, the cache dot 2.
+    const rest = fitRest(cols - (c ? 8 : 6), head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
     const why = judgeDown
       ? 'Laya not running, Haiku judged.'
       : !l
@@ -888,9 +888,10 @@ export const register: Register = (on, options) => {
                   )}
                   {rest.reason !== '' && <Text color="inactive">{`  ${rest.reason}`}</Text>}
                 </Button>
-                {/* The cache and the chevron sit at the right end, as in the design. */}
+                {/* The cache and the chevron sit at the right end, as in the design. The dot carries warm, cooling or cold. */}
                 <Button key="band-cache" plain onPress={toggle}>
-                  {cacheWords !== '' && <Text color={cool ? 'warning' : 'subtle'}>{rest.cache}</Text>}
+                  {cacheWords !== '' && <Text color={left <= 0 ? 'inactive' : cool ? 'warning' : 'success'}>● </Text>}
+                  {cacheWords !== '' && <Text color="subtle">{rest.cache}</Text>}
                   <Text color="subtle">{open ? ' ▴' : ' ▾'}</Text>
                 </Button>
               </Box>
@@ -991,26 +992,31 @@ export const register: Register = (on, options) => {
           <Text bold>arne settings</Text>
           <Button role="dismiss" plain label="Done" onPress={() => undefined} />
         </Box>
+        {/* Each group: a caption over a bordered card of rows, as in the design's inset lists. */}
         <Box flexDirection="column">
           <Text color="subtle">Routing</Text>
-          {choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
-          {choice('Judge', 'backend', [
-            { value: 'heuristic', label: 'Rules only' },
-            { value: 'haiku', label: 'Haiku' },
-            { value: 'laya', label: 'Laya' },
-          ])}
-          {choice('Subagents', 'subagents', [{ value: true, label: 'Route' }, { value: false, label: 'Leave' }])}
+          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+            {choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
+            {choice('Judge', 'backend', [
+              { value: 'heuristic', label: 'Rules only' },
+              { value: 'haiku', label: 'Haiku' },
+              { value: 'laya', label: 'Laya' },
+            ])}
+            {choice('Subagents', 'subagents', [{ value: true, label: 'Route' }, { value: false, label: 'Leave' }])}
+          </Box>
+          {live.backend === 'laya' && (
+            <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>
+          )}
         </Box>
         <Box flexDirection="column">
           <Text color="subtle">Range</Text>
-          {choice('Cheapest model', 'modelFloor', MODELS)}
-          {choice('Strongest model', 'modelCeiling', MODELS)}
-          {choice('Lowest effort', 'effortFloor', EFFORTS)}
-          {choice('Highest effort', 'effortCeiling', EFFORTS)}
+          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+            {choice('Cheapest model', 'modelFloor', MODELS)}
+            {choice('Strongest model', 'modelCeiling', MODELS)}
+            {choice('Lowest effort', 'effortFloor', EFFORTS)}
+            {choice('Highest effort', 'effortCeiling', EFFORTS)}
+          </Box>
         </Box>
-        {live.backend === 'laya' && (
-          <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>
-        )}
         <Text color="inactive">Also in /config.</Text>
       </Box>
     )
