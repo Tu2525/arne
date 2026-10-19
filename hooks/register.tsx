@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, mmss, nextTtl, planSwitch, summaryPrompt, tierOf } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, midTask, mmss, nextTtl, planSwitch, summaryPrompt, tierOf } from './econ'
 import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
@@ -41,6 +41,7 @@ const isPaused = atom({ plugin: 'arne', key: 'isPaused' } as const, false)
 const appEffort = atom({ plugin: 'arne', key: 'appEffort' } as const, null)
 // The session's real model, as state so the band redraws when it changes ($.session.model() alone would not).
 const sessionModel = atom({ plugin: 'arne', key: 'sessionModel' } as const, null)
+const held = atom({ plugin: 'arne', key: 'held' } as const, null)
 // True while effortless is enabled: it writes effort, so arne routes models only.
 const effortless = atom({ plugin: 'arne', key: 'effortless' } as const, false)
 const EFFORTLESS = 'effortless@effortless'
@@ -67,13 +68,52 @@ async function disableEffortless($: any) {
   $.ui.toast(r?.exitCode === 0 ? 'arne: effortless disabled. Restart to hand effort to arne.' : 'arne: could not disable effortless; disable it from the plugin list.')
 }
 
-async function compactNow($: any, note: string) {
+async function compactNow($: any, note: string): Promise<boolean> {
   try {
     await $.command.run({ command: 'compact', args: note.trim() })
+    return true
   } catch {
     $.ui.toast('arne: compact failed; try again when the session is idle')
+    return false
   }
 }
+
+// --- The held prompt (step 17a) ---
+// A prompt typed on a cold, big chat waits here until the person picks Compact & send or Send anyway.
+const CONTINUE_TEXT = 'Continue where you left off.'
+const passOnce = new Set<string>() // texts arne resubmits: each passes the hold once, then is forgotten
+let compactSending = false // a Compact & send is running: its compaction must not also send "Continue"
+let lastReason: string | undefined // how the last main turn ended
+
+// Sends a prompt as the person's own words, past the hold, once.
+async function sendAsUser($: any, text: string) {
+  passOnce.add(text)
+  try {
+    await $.prompt.submit({ text, asUser: true })
+  } catch {
+    passOnce.delete(text)
+    $.ui.toast('arne: could not send your message; it is back in the prompt box')
+    await $.prompt.fill({ text, mode: 'replace' }).catch(() => undefined)
+  }
+}
+
+async function compactAndSend($: any) {
+  const text = await read($, held)
+  if (!text || compactSending) return
+  await update($, held, () => null) // cleared first: a second click finds nothing to send
+  compactSending = true
+  const ok = await compactNow($, '').finally(() => (compactSending = false))
+  if (ok) await sendAsUser($, text)
+  else await update($, held, () => text)
+}
+
+async function sendAnyway($: any) {
+  const text = await read($, held)
+  if (!text) return
+  await update($, held, () => null)
+  await sendAsUser($, text)
+}
+
 
 // Module state. Reset on a reload, like every module variable.
 let current: Decision | undefined
@@ -102,6 +142,7 @@ type Live = {
   compactModel: string
   coldTokens: number
   heavyTokens: number
+  continueAfterCompact: boolean
 }
 const DEFAULTS: Live = {
   auto: true,
@@ -113,9 +154,21 @@ const DEFAULTS: Live = {
   compactModel: 'haiku',
   coldTokens: 30_000,
   heavyTokens: 150_000,
+  continueAfterCompact: true,
 }
 let live: Live = { ...DEFAULTS }
 const FIELDS = Object.keys(DEFAULTS) as (keyof Live)[]
+
+// The cold offer applies: the chat model's cache is cold, the chat is past coldTokens, and this cold
+// spell was not dismissed. Right after a compact the cache numbers are stale, so no offer.
+async function coldOffer($: any, now: number) {
+  const c: Cache | null = await read($, cache)
+  if (!c || afterCompact) return undefined
+  const until = c.warmUntil[c.model] ?? 0
+  if (until > now || c.C < live.coldTokens) return undefined
+  if ((await read($, coldDismissed)) === until) return undefined
+  return { c, ...coldAdvice(c.C, c.model, c.warmUntil, now) }
+}
 
 // The one on/off answer every surface reads: the /arne reply, the band, the status line and the pane.
 type Mode = 'off' | 'paused' | 'on'
@@ -193,6 +246,7 @@ async function cacheTouched($: any, model: string, usage: unknown) {
   const now: number = await $.clock.now()
   const since = lastResponseAt === undefined ? undefined : now - lastResponseAt
   lastResponseAt = now
+  afterCompact = false // the cache numbers below are fresh again
   await update($, cache, (c: Cache | null): Cache => {
     const ttl = nextTtl(c?.ttl ?? '5m', usage, since)
     return { ttl, C: contextOf(usage), model: tier, warmUntil: { ...c?.warmUntil, [tier]: now + CACHE_TTL[ttl] } }
@@ -254,6 +308,7 @@ export const register: Register = (on, options) => {
   // /model waits for an idle session, so it runs from a timer, never inside the turn's own hooks.
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
+    if (e.agentId === undefined) lastReason = e.reason
     const target = switchAfterTurn
     if (e.agentId === undefined && target) {
       switchAfterTurn = undefined
@@ -305,9 +360,27 @@ export const register: Register = (on, options) => {
     }
   }).catch(($, e, next) => next(e))
 
+  // A plain /compact (or Compact with nothing held) picks the work back up, once, if it stopped mid-task.
+  // Compact & send skips this: its own held prompt is the one message that goes.
   on('classic.PostCompact', async ($, e, next) => {
     afterCompact = true
-    return next(e)
+    const r = await next(e)
+    if (e.trigger === 'manual' && !compactSending && live.continueAfterCompact && !(await read($, held)) && midTask(lastReason, e.compact_summary)) {
+      $.clock.after(0, () => sendAsUser($, CONTINUE_TEXT))
+    }
+    return r
+  }).catch(($, e, next) => next(e))
+
+  // Holds a prompt typed on a cold, big chat; arne's own resubmits pass once, as the person's words.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'plugin' && passOnce.delete(e.text)) return next(e)
+    const typed = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+    // Not held: commands, prompts typed into a running turn, and attachments (a resubmit would lose them).
+    if (!typed || e.command || e.isMeta || e.turnId !== undefined || e.attachments?.length) return next(e)
+    if ((await modeOf($)) !== 'on' || (await read($, held))) return next(e)
+    if (!(await coldOffer($, await $.clock.now()))) return next(e)
+    await update($, held, () => e.text)
+    return { drop: 'arne is holding your message: the cache is cold. Pick Compact & send or Send anyway above the prompt.' }
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'arne' }, async ($, e) => {
@@ -537,11 +610,14 @@ export const register: Register = (on, options) => {
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
     const { Box, Button, Text } = $.ui.resolve(e)
-    // A cold chat under coldTokens is cheap to re-warm: no offer.
-    const isCold = !!c && left <= 0 && c.C >= live.coldTokens
-    // Hidden until the cache warms again: the dismissal remembers which cold spell it was.
-    const dismissed = c !== null && (await read($, coldDismissed)) === (c.warmUntil[c.model] ?? 0)
-    const offer = isCold && !dismissed ? coldAdvice(c!.C, c!.model, c!.warmUntil, now) : undefined
+    // A cold chat under coldTokens is cheap to re-warm: no offer. A dismissal lasts until the cache warms again.
+    const heldText = await read($, held)
+    const offer = await coldOffer($, now)
+    // The held prompt's two ways out, priced: the compact row and the plain re-warm.
+    const priced = (a: 'compact' | 'continue') => {
+      const row = offer?.rows.find(x => x.action === a)
+      return row ? ` · $${dollars(row.first).toFixed(3)}` : ''
+    }
     const effortOn = await read($, effortless)
     const sample: Record<BandState, Parameters<typeof bandText>[0]> = {
       routing: { off: false, paused: false, routing: true, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 0, C: 0 },
@@ -575,9 +651,18 @@ export const register: Register = (on, options) => {
             <Button label="Disable effortless" onPress={() => disableEffortless($)} />
           </Box>
         )}
-        {offer && (
+        {heldText && (
           <Box flexDirection="column">
-            <Text>Cache is cold on a {Math.round(c!.C / 1000)}k chat. Next message, by cost (first request):</Text>
+            <Text>Your message is held: the cache is cold, so compacting first costs less.</Text>
+            <Box>
+              <Button key="compact-send" variant="primary" label={`Compact & send${priced('compact')}`} onPress={() => compactAndSend($)} />
+              <Button key="send-anyway" variant="secondary" label={`Send anyway${priced('continue')}`} onPress={() => sendAnyway($)} />
+            </Box>
+          </Box>
+        )}
+        {offer && !heldText && (
+          <Box flexDirection="column">
+            <Text>Cache is cold on a {Math.round(offer.c.C / 1000)}k chat. Next message, by cost (first request):</Text>
             {offer.rows.slice(0, 3).map(row => (
               <Text key={`${row.action}-${row.to ?? ''}`} dimColor>
                 {rowLabel(row)}: ${dollars(row.first).toFixed(3)}
@@ -592,7 +677,7 @@ export const register: Register = (on, options) => {
               <Button
                 key="continue"
                 label="Continue"
-                onPress={() => update($, coldDismissed, () => c!.warmUntil[c!.model] ?? 0)}
+                onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)}
               />
             </Box>
           </Box>
@@ -615,6 +700,7 @@ export const register: Register = (on, options) => {
         {(Object.keys(STEP) as (keyof Live)[]).map(k => (
           <Button key={k} label={`${k}: ${live[k].toLocaleString('en-US')}`} onPress={set(k, nextOf(STEP[k]!, live[k]))} />
         ))}
+        <Button label={`Continue after /compact: ${live.continueAfterCompact ? 'on' : 'off'}`} onPress={set('continueAfterCompact', !live.continueAfterCompact)} />
         <Text dimColor>Each press moves one step. The same values live in /config.</Text>
       </Box>
     )

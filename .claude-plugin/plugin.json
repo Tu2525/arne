@@ -12,6 +12,7 @@
     "effortCeiling": { "type": "string", "title": "Highest effort", "description": "Never think more than this.", "options": ["low", "medium", "high"], "default": "high" },
     "compactModel": { "type": "string", "title": "Compaction model", "description": "The model that writes compaction summaries.", "options": ["haiku", "sonnet"], "default": "haiku" },
     "coldTokens": { "type": "number", "title": "Cold offer above (tokens)", "description": "Offer the cold-cache actions on chats at least this big.", "default": 30000 },
-    "heavyTokens": { "type": "number", "title": "Heavy warning above (tokens)", "description": "The band warns about a chat this big.", "default": 150000 }
+    "heavyTokens": { "type": "number", "title": "Heavy warning above (tokens)", "description": "The band warns about a chat this big.", "default": 150000 },
+    "continueAfterCompact": { "type": "boolean", "title": "Continue after /compact", "description": "After a manual compact, send \"Continue where you left off.\" when the work stopped mid-task.", "default": true }
   }
 }

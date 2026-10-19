@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText, clampEffort, clampTier } from './econ'
+import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText, clampEffort, clampTier, midTask } from './econ'
 
 const near = (got: number, want: number) => expect(Math.abs(got - want) / want <= 0.05).toBe(true)
 
@@ -66,6 +66,13 @@ test('bandText states', () => {
   expect(bandText({ ...base, warmLeftMs: 0, C: 120_000 }).state).toBe('cold')
   expect(bandText({ ...base, C: 160_000 }).state).toBe('heavy')
   expect(bandText({ ...base, off: true }).state).toBe('off')
+})
+
+test('midTask: resume after /compact only when the work stopped mid-way', () => {
+  expect(midTask('answer', 'Goal: x\nNext step: none')).toBe(false)
+  expect(midTask('answer', 'Goal: x\nNext step: run the tests')).toBe(true)
+  expect(midTask('aborted', '')).toBe(true)
+  expect(midTask(undefined, 'no steps listed')).toBe(false)
 })
 
 test('clamps keep tiers and efforts inside the floor and ceiling', () => {

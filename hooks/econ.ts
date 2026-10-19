@@ -133,6 +133,10 @@ export function summaryPrompt(messages: readonly { role: string; text: string }[
   return all.length > maxChars ? all.slice(-maxChars) : all
 }
 
+/** The last turn stopped mid-task: it did not end on an answer, or the compact summary names a next step. */
+export const midTask = (reason: string | undefined, summary: string) =>
+  (reason !== undefined && reason !== 'answer') || /next step[^\n:]*:\s*(?!none|n\/a|nothing)\S/i.test(summary)
+
 // --- Band indicator (step 14) ---
 
 export const WINDOW = 200_000 // context window used for the ◔ fill; ponytail: fixed, read the model's limit if it changes
