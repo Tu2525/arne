@@ -64,9 +64,10 @@ async function startLaya($: any) {
 }
 
 // Best effort: a failed write never blocks a turn.
-async function appendLog($: any, row: Row) {
+// $.fs has no append: read, then write the whole file. ponytail: O(n) per turn, fine below ~10k rows.
+async function appendLog($: any, row: Row & { text: string; agent?: string }) {
   try {
-    const old = await $.fs.read(LOG_FILE).then((r: any) => r.text ?? '').catch(() => '')
+    const old: string = await $.fs.read(LOG_FILE).catch(() => '')
     await $.fs.write(LOG_FILE, old + JSON.stringify(row) + '\n')
   } catch {
     // no log this time
@@ -185,11 +186,16 @@ export const register: Register = on => {
         }
         await update($, last, () => row)
         await update($, log, list => [...list, row].slice(-200))
-        await appendLog($, row)
+        await appendLog($, { ...row, text: e.text })
       }
     } else {
       const agent = (await $.agent.list()).find(a => a.id === e.agentId)
-      agents.set(e.agentId, await route(e.text, { agentType: agent?.type, backends }))
+      const d = await route(e.text, { agentType: agent?.type, backends })
+      agents.set(e.agentId, d)
+      if (d) {
+        const row: Row = { key: `${e.turnId}:${e.agentId}`, model: MODEL[d.tier], effort: d.effort, reason: d.reason, source: d.source, out: 0, cacheRead: 0 }
+        await appendLog($, { ...row, text: e.text, agent: agent?.type })
+      }
     }
 
     return next(e)
