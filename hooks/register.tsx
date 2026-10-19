@@ -147,6 +147,7 @@ type Live = {
   coldTokens: number
   heavyTokens: number
   continueAfterCompact: boolean
+  subagents: boolean
 }
 const DEFAULTS: Live = {
   auto: true,
@@ -159,6 +160,7 @@ const DEFAULTS: Live = {
   coldTokens: 30_000,
   heavyTokens: 150_000,
   continueAfterCompact: true,
+  subagents: true,
 }
 let live: Live = { ...DEFAULTS }
 const FIELDS = Object.keys(DEFAULTS) as (keyof Live)[]
@@ -670,7 +672,8 @@ export const register: Register = (on, options) => {
         await update($, log, list => [...list, row].slice(-200))
         await appendLog($, { ...row, text: e.text, decided: decided ? MODEL[decided.tier] : undefined })
       }
-    } else {
+    } else if (live.subagents) {
+      // Subagents set to Leave: no decision, so their steps keep the model they were spawned with.
       const agent = (await $.agent.list()).find(a => a.id === e.agentId)
       const d = await route(e.text, { agentType: agent?.type, backends: backendsOf($, s.backend) })
       agents.set(e.agentId, d)
@@ -809,9 +812,9 @@ export const register: Register = (on, options) => {
     // An alert row: the message on the left, its actions on the right.
     // Its buttons drop under the message, aligned right, when there is no room beside it.
     const banner = (key: string, message: string, actions: unknown) => (
-      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" gap={1}>
+      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2} borderStyle="round" borderColor="claude" paddingX={1}>
         <Text>{message}</Text>
-        <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" gap={1}>
+        <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
           {actions as any}
         </Box>
       </Box>
@@ -819,7 +822,8 @@ export const register: Register = (on, options) => {
     const lastNote = lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''
     // The resting line at this width: the head never shrinks, the reason fills the rest, the cache steps down.
     const head = `arne  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`
-    const rest = fitRest(cols - 2, head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
+    // The card's border and padding take 4 columns, the chevron 2.
+    const rest = fitRest(cols - 6, head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
     const why = judgeDown
       ? 'Laya not running, Haiku judged.'
       : !l
@@ -859,89 +863,99 @@ export const register: Register = (on, options) => {
               <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactNow($, '')} />,
             ],
           )}
-        {mode === 'paused' ? (
-          <Box flexDirection="row" gap={1}>
-            <Text>arne</Text>
-            <Text color="subtle">paused · you picked {appModel ? shortModel(appModel) : 'a model'}</Text>
-            <Button key="auto" plain label="Resume" onPress={() => toggleAuto($)} />
-          </Box>
-        ) : mode === 'off' ? (
-          <Box flexDirection="row" gap={1}>
-            <Text>arne</Text>
-            <Text color="subtle">off</Text>
-            <Button key="auto" plain label="Turn on" onPress={() => toggleAuto($)} />
-          </Box>
-        ) : (
-          <Box flexDirection="column">
-            <Box flexDirection="row" justifyContent="space-between" gap={1}>
-              <Button key="band" plain onPress={toggle}>
-                <Text bold>arne</Text>
-                {l || band.state === 'routing' ? (
-                  <Text>{`  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`}</Text>
-                ) : (
-                  <Text color="subtle">  auto</Text>
-                )}
-                {rest.reason !== '' && <Text color="inactive">{`  ${rest.reason}`}</Text>}
-                <Text color="subtle">{open ? ' ▴' : ' ▾'}</Text>
-              </Button>
-              {cacheWords !== '' && (
-                <Button key="band-cache" plain onPress={toggle}>
-                  <Text color={cool ? 'warning' : 'subtle'}>{rest.cache}</Text>
+        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+          {mode === 'paused' ? (
+            <Box flexDirection="row" gap={1}>
+              <Text>arne</Text>
+              <Text color="subtle">paused · you picked {appModel ? shortModel(appModel) : 'a model'}</Text>
+              <Button key="auto" plain label="Resume" onPress={() => toggleAuto($)} />
+            </Box>
+          ) : mode === 'off' ? (
+            <Box flexDirection="row" gap={1}>
+              <Text>arne</Text>
+              <Text color="subtle">off</Text>
+              <Button key="auto" plain label="Turn on" onPress={() => toggleAuto($)} />
+            </Box>
+          ) : (
+            <Box flexDirection="column">
+              <Box flexDirection="row" justifyContent="space-between" gap={1}>
+                <Button key="band" plain onPress={toggle}>
+                  <Text bold>arne</Text>
+                  {l || band.state === 'routing' ? (
+                    <Text>{`  ${modelWord}${effortWord ? ` · ${effortWord}` : ''}`}</Text>
+                  ) : (
+                    <Text color="subtle">  auto</Text>
+                  )}
+                  {rest.reason !== '' && <Text color="inactive">{`  ${rest.reason}`}</Text>}
                 </Button>
+                {/* The cache and the chevron sit at the right end, as in the design. */}
+                <Button key="band-cache" plain onPress={toggle}>
+                  {cacheWords !== '' && <Text color={cool ? 'warning' : 'subtle'}>{rest.cache}</Text>}
+                  <Text color="subtle">{open ? ' ▴' : ' ▾'}</Text>
+                </Button>
+              </Box>
+              {open && (
+                <Box flexDirection="column" gap={1} marginTop={1}>
+                  {/* Each row: a fixed-width label, the segments as one group that never splits, then the note. */}
+                  <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+                    <Box flexDirection="row" flexShrink={0}>
+                      <Box width={7} flexShrink={0}>
+                        <Text color="subtle">Model</Text>
+                      </Box>
+                      {segment(
+                        'model',
+                        [{ value: 'auto', label: 'Auto' }, { value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }],
+                        pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto',
+                        v => void setPinPart($, { tier: v === 'auto' ? undefined : TIER_OF[v] }),
+                      )}
+                    </Box>
+                    <Text color="subtle">{pin?.tier ? 'pinned' : `picked ${modelWord}`}</Text>
+                  </Box>
+                  <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+                    <Box flexDirection="row" flexShrink={0}>
+                      <Box width={7} flexShrink={0}>
+                        <Text color="subtle">Effort</Text>
+                      </Box>
+                      {segment(
+                        'effort',
+                        [
+                          { value: 'auto', label: 'Auto' },
+                          ...(['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({
+                            value: v,
+                            label: narrow ? EFFORT_LABEL_SHORT[v] : EFFORT_LABEL[v],
+                          })),
+                        ],
+                        pin?.effort ?? 'auto',
+                        v => void setPinPart($, { effort: v === 'auto' ? undefined : (v as Pin['effort']) }),
+                      )}
+                    </Box>
+                    <Text color="subtle">{pin?.effort ? 'pinned' : effortWord ? `picked ${effortWord}` : 'Haiku takes no effort'}</Text>
+                  </Box>
+                  <Box flexDirection="row" flexWrap="wrap" gap={2} justifyContent="space-between">
+                    <Text>{why}</Text>
+                    {l && !pinned && thankedKey !== l.key && (
+                      <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
+                        <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
+                        <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
+                      </Box>
+                    )}
+                    {l && !pinned && thankedKey === l.key && <Text color="subtle">Logged. arne learns from this.</Text>}
+                  </Box>
+                  {picker && running && tierOf(picker) !== tierOf(running) && (
+                    <Text color="subtle">The app's model menu still shows {shortModel(picker)}. arne runs this turn on {shortModel(running)}.</Text>
+                  )}
+                  <Box flexDirection="row" flexWrap="wrap" gap={2} justifyContent="space-between">
+                    <Box flexDirection="row" gap={2}>
+                      <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
+                      <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
+                    </Box>
+                    {!narrow && <Text color="subtle">Esc to close</Text>}
+                  </Box>
+                </Box>
               )}
             </Box>
-            {open && (
-              <Box flexDirection="column" gap={1}>
-                <Box flexDirection="row" flexWrap="wrap" gap={2}>
-                  <Text color="subtle">Model</Text>
-                  {segment(
-                    'model',
-                    [{ value: 'auto', label: 'Auto' }, { value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }],
-                    pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto',
-                    v => void setPinPart($, { tier: v === 'auto' ? undefined : TIER_OF[v] }),
-                  )}
-                  <Text color="subtle">{pin?.tier ? 'pinned' : `picked ${modelWord}`}</Text>
-                </Box>
-                <Box flexDirection="row" flexWrap="wrap" gap={2}>
-                  <Text color="subtle">Effort</Text>
-                  {segment(
-                    'effort',
-                    [
-                      { value: 'auto', label: 'Auto' },
-                      ...(['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({
-                        value: v,
-                        label: narrow ? EFFORT_LABEL_SHORT[v] : EFFORT_LABEL[v],
-                      })),
-                    ],
-                    pin?.effort ?? 'auto',
-                    v => void setPinPart($, { effort: v === 'auto' ? undefined : (v as Pin['effort']) }),
-                  )}
-                  <Text color="subtle">{pin?.effort ? 'pinned' : effortWord ? `picked ${effortWord}` : 'Haiku takes no effort'}</Text>
-                </Box>
-                <Box flexDirection="row" flexWrap="wrap" gap={2} justifyContent="space-between">
-                  <Text>{why}</Text>
-                  {l && !pinned && thankedKey !== l.key && (
-                    <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" gap={1}>
-                      <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
-                      <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
-                    </Box>
-                  )}
-                  {l && !pinned && thankedKey === l.key && <Text color="subtle">Logged. arne learns from this.</Text>}
-                </Box>
-                {picker && running && tierOf(picker) !== tierOf(running) && (
-                  <Text color="subtle">The app's model menu still shows {shortModel(picker)}. arne runs this turn on {shortModel(running)}.</Text>
-                )}
-                <Box flexDirection="row" flexWrap="wrap" gap={2} justifyContent="space-between">
-                  <Box flexDirection="row" gap={2}>
-                    <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
-                    <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
-                  </Box>
-                  {!narrow && <Text color="subtle">Esc to close</Text>}
-                </Box>
-              </Box>
-            )}
-          </Box>
-        )}
+          )}
+        </Box>
       </Box>
     )
   })
@@ -950,12 +964,14 @@ export const register: Register = (on, options) => {
   // so the pane and /config never disagree.
   on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
+    // Narrow, as in the band: the short effort names, and a row's segments drop under its label.
+    const narrow = Number(e.viewport?.columns ?? 80) < 72
     const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
       const set = (value: unknown) => $.config.set({ key: `arne.${key}`, value })
       return (
-        <Box key={key} flexDirection="row" justifyContent="space-between" gap={2}>
+        <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2}>
           <Text>{label}</Text>
-          <Box flexDirection="row" gap={1}>
+          <Box flexDirection="row" flexShrink={0} flexGrow={1} justifyContent="flex-end" gap={1}>
             {options.map(o =>
               o.value === live[key] ? (
                 <Button key={`${key}-${String(o.value)}`} variant="secondary" label={o.label} onPress={() => set(o.value)} />
@@ -968,36 +984,34 @@ export const register: Register = (on, options) => {
       )
     }
     const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
-    const EFFORTS = [
-      { value: 'low', label: 'Low' },
-      { value: 'medium', label: 'Medium' },
-      { value: 'high', label: 'High' },
-      { value: 'xhigh', label: 'Extra high' },
-      { value: 'max', label: 'Max' },
-    ]
+    const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: (narrow ? EFFORT_LABEL_SHORT : EFFORT_LABEL)[v] }))
     return (
       <Box flexDirection="column" gap={1}>
+        <Box flexDirection="row" justifyContent="space-between" gap={2}>
+          <Text bold>arne settings</Text>
+          <Button role="dismiss" plain label="Done" onPress={() => undefined} />
+        </Box>
         <Box flexDirection="column">
-          <Text bold>Routing</Text>
+          <Text color="subtle">Routing</Text>
           {choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
           {choice('Judge', 'backend', [
             { value: 'heuristic', label: 'Rules only' },
             { value: 'haiku', label: 'Haiku' },
             { value: 'laya', label: 'Laya' },
           ])}
-          {live.backend === 'laya' && (
-            <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>
-          )}
+          {choice('Subagents', 'subagents', [{ value: true, label: 'Route' }, { value: false, label: 'Leave' }])}
         </Box>
         <Box flexDirection="column">
-          <Text bold>Range</Text>
+          <Text color="subtle">Range</Text>
           {choice('Cheapest model', 'modelFloor', MODELS)}
           {choice('Strongest model', 'modelCeiling', MODELS)}
           {choice('Lowest effort', 'effortFloor', EFFORTS)}
           {choice('Highest effort', 'effortCeiling', EFFORTS)}
         </Box>
+        {live.backend === 'laya' && (
+          <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>
+        )}
         <Text color="inactive">Also in /config.</Text>
-        <Button role="dismiss" label="Done" onPress={() => undefined} />
       </Box>
     )
   })
