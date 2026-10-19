@@ -727,6 +727,9 @@ export const register: Register = (on, options) => {
     // The width the band gets, re-read on every render: AbovePrompt's bodyColumns, else the viewport's columns.
     const cols = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80)
     const narrow = cols < 72
+    // The desktop draws a Button as its own native button and flattens Text children into one plain label,
+    // so there the resting line is styled Text in a row and only the chevron is the button.
+    const gui = e.surface !== 'terminal'
     // A cold chat under coldTokens is cheap to re-warm: no offer. A dismissal lasts until the cache warms again.
     const heldText = await read($, held)
     const pin = (await settings($)).pin
@@ -812,7 +815,7 @@ export const register: Register = (on, options) => {
     // An alert row: the message on the left, its actions on the right.
     // Its buttons drop under the message, aligned right, when there is no room beside it.
     const banner = (key: string, message: string, actions: unknown) => (
-      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2} borderStyle="round" borderColor="warning" paddingX={1}>
+      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2} borderStyle="round" borderColor="warning" paddingX={gui ? undefined : 1}>
         <Text>{message}</Text>
         <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
           {actions as any}
@@ -834,7 +837,7 @@ export const register: Register = (on, options) => {
           ? `${cap(plainReason(l.reason))}, so ${shortModel(waiting)} fits better. Switching now re-reads ${chatK} tokens, so arne stays on ${modelWord} until the cache cools.${lastNote}`
           : `${modelWord} because ${plainReason(l.reason)}.${lastNote}`
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" rowGap={gui ? 1 : 0}>
         {effortOn &&
           banner(
             'alert-effortless',
@@ -863,7 +866,7 @@ export const register: Register = (on, options) => {
               <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactNow($, '')} />,
             ],
           )}
-        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
           {mode === 'paused' ? (
             <Box flexDirection="row" gap={1}>
               <Text>arne</Text>
@@ -878,6 +881,22 @@ export const register: Register = (on, options) => {
             </Box>
           ) : (
             <Box flexDirection="column">
+              {gui ? (
+                <Box key="band-line" flexDirection="row" alignItems="center" gap={1}>
+                  <Text bold>arne</Text>
+                  {l || band.state === 'routing' ? (
+                    <Text>{`${modelWord}${effortWord ? ` · ${effortWord}` : ''}`}</Text>
+                  ) : (
+                    <Text color="subtle">auto</Text>
+                  )}
+                  <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                    {reason !== '' && <Text color="subtle" wrap="truncate-end">{reason}</Text>}
+                  </Box>
+                  {cacheWords !== '' && <Text color={left <= 0 ? 'inactive' : cool ? 'warning' : 'success'}>●</Text>}
+                  {cacheWords !== '' && <Text color="subtle">{rest.cache}</Text>}
+                  <Button key="band" plain label={open ? '▴' : '▾'} onPress={toggle} />
+                </Box>
+              ) : (
               <Box flexDirection="row" justifyContent="space-between" gap={1}>
                 <Button key="band" plain onPress={toggle}>
                   <Text bold>arne</Text>
@@ -895,11 +914,12 @@ export const register: Register = (on, options) => {
                   <Text color="subtle">{open ? ' ▴' : ' ▾'}</Text>
                 </Button>
               </Box>
+              )}
               {open && (
                 <Box flexDirection="column" gap={1} marginTop={1}>
                   {/* Each row: a fixed-width label, the segments as one group that never splits, then the note. */}
-                  <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-                    <Box flexDirection="row" flexShrink={0}>
+                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+                    <Box flexDirection="row" alignItems="center" flexShrink={0}>
                       <Box width={7} flexShrink={0}>
                         <Text color="subtle">Model</Text>
                       </Box>
@@ -912,8 +932,8 @@ export const register: Register = (on, options) => {
                     </Box>
                     <Text color="subtle">{pin?.tier ? 'pinned' : `picked ${modelWord}`}</Text>
                   </Box>
-                  <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-                    <Box flexDirection="row" flexShrink={0}>
+                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+                    <Box flexDirection="row" alignItems="center" flexShrink={0}>
                       <Box width={7} flexShrink={0}>
                         <Text color="subtle">Effort</Text>
                       </Box>
@@ -932,7 +952,7 @@ export const register: Register = (on, options) => {
                     </Box>
                     <Text color="subtle">{pin?.effort ? 'pinned' : effortWord ? `picked ${effortWord}` : 'Haiku takes no effort'}</Text>
                   </Box>
-                  <Box flexDirection="row" flexWrap="wrap" gap={2} justifyContent="space-between">
+                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Text>{why}</Text>
                     {l && !pinned && thankedKey !== l.key && (
                       <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
@@ -945,7 +965,7 @@ export const register: Register = (on, options) => {
                   {picker && running && tierOf(picker) !== tierOf(running) && (
                     <Text color="subtle">The app's model menu still shows {shortModel(picker)}. arne runs this turn on {shortModel(running)}.</Text>
                   )}
-                  <Box flexDirection="row" flexWrap="wrap" gap={2} justifyContent="space-between">
+                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Box flexDirection="row" gap={2}>
                       <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
                       <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
@@ -967,10 +987,11 @@ export const register: Register = (on, options) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     // Narrow, as in the band: the short effort names, and a row's segments drop under its label.
     const narrow = Number(e.viewport?.columns ?? 80) < 72
+    const gui = e.surface !== 'terminal'
     const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
       const set = (value: unknown) => $.config.set({ key: `arne.${key}`, value })
       return (
-        <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2}>
+        <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
           <Text>{label}</Text>
           <Box flexDirection="row" flexShrink={0} flexGrow={1} justifyContent="flex-end" gap={1}>
             {options.map(o =>
@@ -988,14 +1009,14 @@ export const register: Register = (on, options) => {
     const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: (narrow ? EFFORT_LABEL_SHORT : EFFORT_LABEL)[v] }))
     return (
       <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" justifyContent="space-between" gap={2}>
+        <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
           <Text bold>arne settings</Text>
           <Button role="dismiss" plain label="Done" onPress={() => undefined} />
         </Box>
         {/* Each group: a caption over a bordered card of rows, as in the design's inset lists. */}
         <Box flexDirection="column">
           <Text color="subtle">Routing</Text>
-          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
             {choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
             {choice('Judge', 'backend', [
               { value: 'heuristic', label: 'Rules only' },
@@ -1010,7 +1031,7 @@ export const register: Register = (on, options) => {
         </Box>
         <Box flexDirection="column">
           <Text color="subtle">Range</Text>
-          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
             {choice('Cheapest model', 'modelFloor', MODELS)}
             {choice('Strongest model', 'modelCeiling', MODELS)}
             {choice('Lowest effort', 'effortFloor', EFFORTS)}

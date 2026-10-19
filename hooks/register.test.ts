@@ -254,3 +254,18 @@ test('a chat past the heavy size gets its own banner with both costs, not a band
   expect(await band.find({ type: 'Button', text: 'Compact and send' })).toBeDefined()
   expect(await band.find({ type: 'Button', text: 'Send anyway' })).toBeDefined()
 })
+
+test('on the desktop the resting line is styled Text and the chevron alone is the button (17l)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  s.usage = { input_tokens: 50_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 'd1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
+  expect(await band.find({ type: 'Text', text: 'arne' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /cache warm \d+m · 50k/ })).toBeDefined()
+  expect(await band.find({ type: 'Button', text: /arne/ })).toBeUndefined()
+  await band.press({ key: 'band' })
+  for (let i = 0; i < 2; i++) await clock.settle()
+  expect(await band.find({ type: 'Button', text: 'Extra high' })).toBeDefined()
+})
