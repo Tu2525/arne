@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, midTask, mmss, nextTtl, planSwitch, shortModel, summaryPrompt, tierOf } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, midTask, mmss, nextTtl, planSwitch, shortModel, summaryPrompt, tierOf, WINDOW } from './econ'
 import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
@@ -33,6 +33,24 @@ const STEP: Partial<Record<keyof Live, number[]>> = {
   coldTokens: [15_000, 30_000, 60_000],
   heavyTokens: [100_000, 150_000, 200_000],
 }
+// The settings pane's groups and row names, worded as plugin.json's titles so /config reads the same.
+const TITLE: Record<keyof Live, string> = {
+  auto: 'Auto routing',
+  backend: 'Classifier',
+  modelFloor: 'Lowest model',
+  modelCeiling: 'Highest model',
+  effortFloor: 'Lowest effort',
+  effortCeiling: 'Highest effort',
+  compactModel: 'Compaction model',
+  coldTokens: 'Cold offer above',
+  heavyTokens: 'Heavy warning above',
+  continueAfterCompact: 'Continue after /compact',
+}
+const GROUPS: { name: string; about: string; keys: (keyof Live)[] }[] = [
+  { name: 'Routing', about: 'Who picks the model and effort for each prompt.', keys: ['auto', 'backend'] },
+  { name: 'Models', about: 'The range arne routes within.', keys: ['modelFloor', 'modelCeiling', 'effortFloor', 'effortCeiling'] },
+  { name: 'Cache & compact', about: 'What arne offers when the cache goes cold or the chat grows big.', keys: ['compactModel', 'coldTokens', 'heavyTokens', 'continueAfterCompact'] },
+]
 const nextOf = <T,>(list: T[], v: T): T => list[(list.indexOf(v) + 1) % list.length]
 const TIER_OF: Record<string, Tier> = { haiku: 'S', sonnet: 'M', opus: 'L' }
 
@@ -55,9 +73,8 @@ const effortless = atom({ plugin: 'arne', key: 'effortless' } as const, false)
 const EFFORTLESS = 'effortless@effortless'
 const SETTINGS_FILE = '.claude/settings.json' // under the home directory, same as LOG_FILE
 const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
-// The band's two expandable parts: the last decision's reason (why) and the cache's cold advice.
+// The band's why row: the last decision's reason, the cold-cache costs and 👍/👎.
 const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
-const cacheOpen = atom({ plugin: 'arne', key: 'cacheOpen' } as const, false)
 // What the desktop app's model picker shows: the session's first model, then each pick made in it
 // (PostModelSwitch source "sdk"). Plugins cannot move that picker, so arne's /model can differ from it.
 const appPicker = atom({ plugin: 'arne', key: 'appPicker' } as const, null)
@@ -721,7 +738,6 @@ export const register: Register = (on, options) => {
     const heldText = await read($, held)
     const pin = (await settings($)).pin
     const whyIsOpen = await read($, whyOpen)
-    const cacheIsOpen = await read($, cacheOpen)
     const picker = await read($, appPicker)
     const running = await read($, sessionModel)
     const offer = await coldOffer($, now)
@@ -754,98 +770,101 @@ export const register: Register = (on, options) => {
           C: c?.C ?? 0,
           heavyTokens: live.heavyTokens,
         })
-    // The resting line: every part clickable. Hover on a picker shows its reason, as a card over the line.
-    // The Auto label stays short so the row does not shift between states; a pause explains itself on the alert line above.
-    const autoLabel = mode === 'on' ? '● Auto' : mode === 'off' ? '○ Auto' : '⏸ Resume'
+    // One quiet line at rest, read like Claude's own footer: Auto, model, effort, cache, why, settings.
+    // Labels keep their width across states; a state that needs words gets its own line above.
+    const autoLabel = mode === 'on' ? '● Auto' : '○ Auto'
+    const shownModel = shortModel(band.state === 'routing' ? running ?? MODEL.M : appModel ?? (l ? l.model : running ?? MODEL.M))
+    const shownEffort = (mode === 'on' ? l?.effort : await read($, appEffort)) ?? '-'
+    const modelOptions = pin?.tier
+      ? [{ value: 'auto', label: 'Auto' }, ...(['haiku', 'sonnet', 'opus'] as const).map(v => ({ value: v, label: v[0].toUpperCase() + v.slice(1) }))]
+      : [{ value: 'auto', label: shownModel }, ...(['haiku', 'sonnet', 'opus'] as const).map(v => ({ value: v, label: `Pin ${v[0].toUpperCase() + v.slice(1)}` }))]
+    const effortOptions = pin?.effort
+      ? [{ value: 'auto', label: 'Auto' }, ...(['low', 'medium', 'high'] as const).map(v => ({ value: v, label: v }))]
+      : [{ value: 'auto', label: shownEffort }, ...(['low', 'medium', 'high'] as const).map(v => ({ value: v, label: `Pin ${v}` }))]
     const card = (key: string) => (
       <Box key={`card-${key}`} position="absolute" top={1} left={0} display="none" hover={{ display: 'flex', scope: 'arne-pick' }}>
-        <Text>{whyText(l, Boolean(pin))}</Text>
+        <Text color="subtle">{whyText(l, Boolean(pin))}</Text>
       </Box>
     )
-    const cacheLabel = `${left > 0 && left < 5 * 60_000 ? '⚠ ' : ''}cache ${left > 0 ? mmss(left) : 'cold'}`
-    const costRows = cacheIsOpen && c ? coldAdvice(c.C, c.model, c.warmUntil, now).rows : []
+    const cool = left > 0 && left < 5 * 60_000
+    const cacheText = c ? `cache ${left > 0 ? mmss(left) : 'cold'} · ◔ ${Math.round(((c.C ?? 0) / WINDOW) * 100)}%` : ''
+    const costRows = whyIsOpen && c ? coldAdvice(c.C, c.model, c.warmUntil, now).rows : []
+    // Alerts name arne; the resting line does not.
+    const alert =
+      band.state === 'paused'
+        ? `arne paused: you picked ${appModel ? shortModel(appModel) : 'a model'}. Auto resumes routing.`
+        : band.state === 'off'
+          ? 'arne off: requests use the session model.'
+          : band.state === 'cold' || band.state === 'heavy'
+            ? `arne: ${band.text}`
+            : undefined
     return (
       <Box flexDirection="column">
-        {(band.state === 'cold' || band.state === 'heavy' || band.state === 'paused' || band.state === 'off') && (
-          <Text dimColor>arne: {band.text}</Text>
-        )}
+        {alert && <Text color={band.state === 'cold' || band.state === 'heavy' ? 'warning' : 'subtle'}>{alert}</Text>}
         {picker && running && tierOf(picker) !== tierOf(running) && (
           <Box key="picker-note" hover={{ scope: 'arne-picker' }}>
             <Text color="subtle">
               Running {shortModel(running)} · app picker shows {shortModel(picker)}
             </Text>
             <Box key="picker-card" position="absolute" top={1} left={0} display="none" hover={{ display: 'flex', scope: 'arne-picker' }}>
-              <Text>Plugins can't move the app's model picker yet; arne's /model is what answers.</Text>
+              <Text color="subtle">Plugins can't move the app's model picker yet. The model arne set is the one that answers.</Text>
             </Box>
           </Box>
         )}
-        <Box flexDirection="row" gap={1}>
-          <Button key="auto" variant={mode === 'paused' ? 'primary' : 'secondary'} label={autoLabel} onPress={() => toggleAuto($)} />
+        <Box flexDirection="row" gap={1} alignItems="center">
+          <Button key="auto" variant="secondary" label={autoLabel} onPress={() => toggleAuto($)} />
           <Box key="pick-model" hover={{ scope: 'arne-pick' }}>
             <Select
               key="model"
-              label={pin?.tier ? '📌' : ''}
-              options={[
-                { value: 'auto', label: 'Auto' },
-                { value: 'haiku', label: 'Haiku' },
-                { value: 'sonnet', label: 'Sonnet' },
-                { value: 'opus', label: 'Opus' },
-              ]}
+              label={pin?.tier ? '📌' : undefined}
+              options={modelOptions}
               value={pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto'}
-              onSelect={(value: string) => {
-                const tier = TIER_OF[value]
-                void setPinPart($, { tier })
-              }}
+              onSelect={(value: string) => void setPinPart($, { tier: TIER_OF[value] })}
             />
             {card('model')}
           </Box>
           <Box key="pick-effort" hover={{ scope: 'arne-pick' }}>
             <Select
               key="effort"
-              label={pin?.effort ? '📌' : ''}
-              options={[
-                { value: 'auto', label: 'Auto' },
-                { value: 'low', label: 'low' },
-                { value: 'medium', label: 'medium' },
-                { value: 'high', label: 'high' },
-              ]}
+              label={pin?.effort ? '📌' : undefined}
+              options={effortOptions}
               value={pin?.effort ?? 'auto'}
               onSelect={(value: string) => void setPinPart($, { effort: value === 'auto' ? undefined : (value as Pin['effort']) })}
             />
             {card('effort')}
           </Box>
-          <Button key="cache" label={cacheLabel} onPress={() => update($, cacheOpen, o => !o)} />
-          <Button key="why" label={whyIsOpen ? 'why ▴' : 'why ▾'} onPress={() => update($, whyOpen, o => !o)} />
-          <Button key="gear" label="⚙" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
+          {band.state === 'routing' ? (
+            <Text color="subtle">routing…</Text>
+          ) : (
+            cacheText && <Text color={cool ? 'warning' : 'subtle'}>{cacheText}</Text>
+          )}
+          <Button key="why" variant="secondary" label={whyIsOpen ? 'Hide why' : 'Why'} onPress={() => update($, whyOpen, o => !o)} />
+          <Button key="gear" variant="secondary" label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
         </Box>
         {whyIsOpen && (
           <Box flexDirection="column">
-            <Text dimColor>{whyText(l, Boolean(pin))}</Text>
-            <Box gap={1}>
-              <Button key="up" label="👍" onPress={() => feedback($, 'up')} />
-              <Button key="down" label="👎" onPress={() => feedback($, 'down')} />
-            </Box>
-          </Box>
-        )}
-        {costRows.length > 0 && (
-          <Box flexDirection="column">
+            <Text color="subtle">{whyText(l, Boolean(pin))}</Text>
             {costRows.slice(0, 3).map(row => (
-              <Text key={`cost-${row.action}-${row.to ?? ''}`} dimColor>
+              <Text key={`cost-${row.action}-${row.to ?? ''}`} color="inactive">
                 {rowLabel(row)}: ${dollars(row.first).toFixed(3)}
               </Text>
             ))}
+            <Box gap={1}>
+              <Button key="up" variant="secondary" label="👍 Right call" onPress={() => feedback($, 'up')} />
+              <Button key="down" variant="secondary" label="👎 Wrong call" onPress={() => feedback($, 'down')} />
+            </Box>
           </Box>
         )}
         {effortOn && (
           <Box flexDirection="column">
-            <Text>effortless is on and sets effort too. Disable it, then restart, so arne can.</Text>
-            <Button label="Disable effortless" onPress={() => disableEffortless($)} />
+            <Text color="subtle">arne: effortless is on and sets effort too. Disable it and restart so arne can.</Text>
+            <Button key="disable-effortless" variant="secondary" label="Disable effortless" onPress={() => disableEffortless($)} />
           </Box>
         )}
         {heldText && (
           <Box flexDirection="column">
-            <Text>Your message is held: the cache is cold, so compacting first costs less.</Text>
-            <Box>
+            <Text>arne held your message: the cache is cold, so compacting first costs less.</Text>
+            <Box gap={1}>
               <Button key="compact-send" variant="primary" label={`Compact & send${priced('compact')}`} onPress={() => compactAndSend($)} />
               <Button key="send-anyway" variant="secondary" label={`Send anyway${priced('continue')}`} onPress={() => sendAnyway($)} />
             </Box>
@@ -853,20 +872,17 @@ export const register: Register = (on, options) => {
         )}
         {offer && !heldText && (
           <Box flexDirection="column">
-            <Text>Cache is cold on a {Math.round(offer.c.C / 1000)}k chat. Next message, by cost (first request):</Text>
+            <Text>arne: the cache is cold on a {Math.round(offer.c.C / 1000)}k chat. Cost of the next message:</Text>
             {offer.rows.slice(0, 3).map(row => (
-              <Text key={`${row.action}-${row.to ?? ''}`} dimColor>
+              <Text key={`${row.action}-${row.to ?? ''}`} color="inactive">
                 {rowLabel(row)}: ${dollars(row.first).toFixed(3)}
               </Text>
             ))}
-            <Box>
-              <Button
-                key="compact"
-                label={offer.best.action === 'compact' ? 'Compact (cheapest)' : 'Compact'}
-                onPress={() => compactNow($, '')}
-              />
+            <Box gap={1}>
+              <Button key="compact" variant={offer.best.action === 'compact' ? 'primary' : 'secondary'} label="Compact" onPress={() => compactNow($, '')} />
               <Button
                 key="continue"
+                variant={offer.best.action === 'compact' ? 'secondary' : 'primary'}
                 label="Continue"
                 onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)}
               />
@@ -877,22 +893,28 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The ⚙ pane: each row cycles its value through $.config.set, so /config and the pane never disagree.
+  // The settings pane, grouped like /config: each row cycles its value through $.config.set, so the two never disagree.
   on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const set = (key: keyof Live, value: unknown) => () => $.config.set({ key: `arne.${key}`, value })
     const mode = await modeOf($)
+    const valueOf = (k: keyof Live) =>
+      typeof live[k] === 'boolean' ? (live[k] ? 'on' : 'off') : typeof live[k] === 'number' ? `${Math.round((live[k] as number) / 1000)}k tokens` : String(live[k])
+    const nextValue = (k: keyof Live) =>
+      k === 'auto' ? mode !== 'on' : CHOICES[k] ? nextOf(CHOICES[k]!, live[k]) : STEP[k] ? nextOf(STEP[k]!, live[k]) : !live[k]
+    const row = (k: keyof Live) => (
+      <Button key={k} variant="secondary" label={`${TITLE[k]}: ${k === 'auto' ? mode : valueOf(k)}`} onPress={set(k, nextValue(k))} />
+    )
     return (
-      <Box flexDirection="column">
-        <Button label={`Auto routing: ${mode}`} onPress={set('auto', mode !== 'on')} />
-        {(Object.keys(CHOICES) as (keyof Live)[]).map(k => (
-          <Button key={k} label={`${k}: ${String(live[k])}`} onPress={set(k, nextOf(CHOICES[k]!, live[k]))} />
+      <Box flexDirection="column" gap={1}>
+        {GROUPS.map(g => (
+          <Box key={g.name} flexDirection="column">
+            <Text bold>{g.name}</Text>
+            <Text color="subtle">{g.about}</Text>
+            {g.keys.map(row)}
+          </Box>
         ))}
-        {(Object.keys(STEP) as (keyof Live)[]).map(k => (
-          <Button key={k} label={`${k}: ${live[k].toLocaleString('en-US')}`} onPress={set(k, nextOf(STEP[k]!, live[k]))} />
-        ))}
-        <Button label={`Continue after /compact: ${live.continueAfterCompact ? 'on' : 'off'}`} onPress={set('continueAfterCompact', !live.continueAfterCompact)} />
-        <Text dimColor>Each press moves one step. The same values live in /config.</Text>
+        <Text color="inactive">Each press moves one step. The same settings are in /config.</Text>
       </Box>
     )
   })

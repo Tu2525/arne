@@ -143,3 +143,15 @@ test('a pin from the band or /arne pin moves /model at once, before any prompt (
   expect(s.ran.at(-1)).toBe('/model claude-haiku-5-5')
   expect(s.entered).toEqual([])
 })
+
+test('the band names arne only in alerts, and the settings pane is grouped like /config (17b)', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  on('config.set', (_$: unknown, e: { value: unknown }) => ({ value: e.value }))
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
+  expect(await band.find({ type: 'Text', text: /arne/ })).toBeUndefined()
+  await $.command.run({ command: 'arne', args: 'off' })
+  expect(await band.find({ type: 'Text', text: /^arne off/ })).toBeDefined()
+
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', props: {}, requestId: 'arne-settings', viewport: { columns: 80, rows: 30 } })
+  for (const group of ['Routing', 'Models', 'Cache & compact']) expect(await pane.find({ type: 'Text', text: group })).toBeDefined()
+})
