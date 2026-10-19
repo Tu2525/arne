@@ -23,6 +23,10 @@ The band above the prompt is the control: **● Auto** turns routing on or off (
 
 effortless by HeyCubit is MIT-licensed. arne reuses its cost formulas and its bench tasks; its licence is in [bench/LICENSE.effortless](bench/LICENSE.effortless).
 
+## License
+
+MIT, see [LICENSE](LICENSE).
+
 ## Bench vs effortless
 
 effortless's own `bench/agentic` tasks (MIT): four real coding tasks on effortless's source. They find a threshold, add JSDoc to one file without touching code, write and run a test-counting script, and explain the update flow. The app was on Opus · medium every time, set up three ways:
