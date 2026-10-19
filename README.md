@@ -4,6 +4,25 @@ A Claude Code plugin that sends each prompt and each subagent run to the cheapes
 
 arne replaces effortless by HeyCubit (MIT). Its cost ratios and the bench below come from effortless. Turn effortless off while arne is on.
 
+## Install
+
+```
+/plugin marketplace add tu2525/arne
+/plugin install arne@arne
+```
+
+Then disable effortless if you have it, and restart.
+
+## Use
+
+The band above the prompt is the control: **● Auto** turns routing on or off (or resumes it after you pick a model yourself), the model and effort pickers pin a choice (Auto unpins), **why** shows the last decision with 👍/👎, **cache** shows what a cold cache will cost, and **⚙** opens the settings. The same settings live in `/config`.
+
+`/arne` covers the same ground from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `why`, `log`, `backend haiku|heuristic|laya`, `settings`.
+
+## Credits
+
+effortless by HeyCubit is MIT-licensed. arne reuses its cost formulas and its bench tasks; its licence is in [bench/LICENSE.effortless](bench/LICENSE.effortless).
+
 ## Bench vs effortless
 
 effortless's own `bench/agentic` tasks (MIT): four real coding tasks on effortless's source. They find a threshold, add JSDoc to one file without touching code, write and run a test-counting script, and explain the update flow. The app was on Opus · medium every time, set up three ways:
