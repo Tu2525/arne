@@ -1,7 +1,8 @@
 export type Tier = 'S' | 'M' | 'L'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Verdict = { tier: Tier; effort: Effort; reason: string }
-export type Decision = Verdict & { source: string }
+// keepEffort: a model-only pin; the request keeps the effort the app sends, whatever `effort` says.
+export type Decision = Verdict & { source: string; keepEffort?: boolean }
 export type Backend = { name: string; ask: (text: string) => Promise<Verdict | undefined> }
 export type Ctx = {
   prev?: Decision
@@ -29,9 +30,14 @@ const HARD = /\b(architect\w*|design|plan|why does|race|security)\b/i
 const EASY = /\b(typo|rename|format|what is)\b/i
 const LONG = 2000
 const EASY_MAX = 300 // a long prompt that says "rename" is rarely just a rename
+// A short follow-up with none of these words carries on the work in hand ("looks good, next one"):
+// it keeps the previous tier and effort and the judge is not asked (17p).
+const FOLLOW_MAX = 80
+const TASK = /\b(add|build|write|fix|implement|create|refactor|make|change|remove|delete|test|debug|explain|why|how|update|rename|move|review|design|plan|migrate|install|deploy|port|rewrite|find|search|list|show|check|run|look|read|summari[sz]e|compare|convert|generate|setup|set up)\b/i
 
 const fast = (text: string): Verdict | 'keep' | undefined => {
   if (text.trim() === '' || CONTINUE.test(text)) return 'keep'
+  if (text.trim().length < FOLLOW_MAX && !TASK.test(text) && !HARD.test(text) && !EASY.test(text)) return 'keep'
   if (text.length > LONG || HARD.test(text)) return { tier: 'L', effort: 'high', reason: 'fast: hard' }
   if (text.length < EASY_MAX && EASY.test(text)) return { tier: 'S', effort: 'low', reason: 'fast: easy' }
 }

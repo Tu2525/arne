@@ -70,7 +70,7 @@ test('an effort change is silent: no /effort typed, the prompt is not dropped (1
   expect(s.ran).toEqual([])
 })
 
-test('a cold, big chat holds the prompt; Send anyway sends it once, however often it is pressed (17a)', async ($: any, on: any) => {
+test('a cold, big chat holds the prompt; Send as is sends it once, however often it is pressed (17a)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
   // One 50k-token answer on Opus, then two hours: the cache is cold and the chat is past coldTokens.
   s.usage = { input_tokens: 50_000 }
@@ -238,16 +238,20 @@ test('the band takes its width from bodyColumns: one resting row, short effort l
   expect(await narrow.find({ type: 'Text', text: /Sonnet/ })).toBeDefined()
 })
 
-test('a chat past the heavy size gets its own banner with both costs, not a band row (17i)', async ($: any, on: any) => {
-  const { s } = engine(on, 'claude-sonnet-5-5')
-  s.usage = { input_tokens: 160_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+test('a big chat with a warm cache shows no alert; once cold, the alert gives both costs in plain words (17p)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  s.usage = { input_tokens: 263_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
   for await (const _ of $.turn.step({ turnId: 'h1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
     // drain
   }
-  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
-  expect(await band.find({ type: 'Text', text: /Chat is 160k tokens\. Compacting with Haiku costs \$[\d.]+; resending the whole chat costs \$[\d.]+\./ })).toBeDefined()
-  expect(await band.find({ type: 'Button', text: 'Compact and send' })).toBeDefined()
-  expect(await band.find({ type: 'Button', text: 'Dismiss' })).toBeDefined()
+  const warm = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
+  expect(await warm.find({ type: 'Text', text: /cache went cold|Chat is/i }).catch(() => undefined)).toBeUndefined()
+  expect(await warm.find({ type: 'Button', text: /Summarize/ }).catch(() => undefined)).toBeUndefined()
+  await warm.unmount()
+  await clock.advance(2 * 60 * 60_000)
+  const cold = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
+  expect(await cold.find({ type: 'Text', text: /^The cache went cold, so your next message re-reads all 263k tokens: \$[\d.]+\. A Haiku summary first costs \$[\d.]+\.$/ })).toBeDefined()
+  expect(await cold.find({ type: 'Button', text: 'Summarize' })).toBeDefined()
 })
 
 test('on the desktop the resting line is styled Text and the chevron alone is the button (17l)', async ($: any, on: any) => {
@@ -272,12 +276,13 @@ test('a narrow settings pane takes its width from bodyColumns and shows the shor
   expect(await pane.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
 })
 
-test('Handoff sits beside Compact and runs the compact that saves and copies the summary (17o)', async ($: any, on: any) => {
-  const { s } = engine(on, 'claude-sonnet-5-5')
+test('Handoff sits beside Summarize and runs the compact that saves and copies the summary (17o)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
   s.usage = { input_tokens: 160_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
   for await (const _ of $.turn.step({ turnId: 'ho1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
     // drain
   }
+  await clock.advance(2 * 60 * 60_000)
   await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
   await $.ui.press({ plugin: 'arne', key: 'handoff' })
   expect(s.ran).toContain('/compact ')
@@ -299,4 +304,62 @@ test('an Auto pick says so on the band: auto, the model, routed; a pin does not'
   for (let i = 0; i < 3; i++) await clock.settle()
   const pinned = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
   expect(await pinned.find({ type: 'Text', text: /\(routed\)/ }).catch(() => undefined)).toBeUndefined()
+})
+
+test('a model pin from the app menu pins both parts: no judge, the effort the app sends, subagents left alone (17p)', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  let judged = 0
+  on('model.complete', () => (judged++, { value: { text: '{"tier":"S","effort":"low","reason":"x"}', isAnswered: true } }))
+  on('turn.start', (_$: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'claude-opus-5-5', source: 'sdk' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  s.ran.length = 0
+  const r = await $.prompt.submit(typed('tidy up the helpers in this module'))
+  expect('drop' in r).toBe(false)
+  await $.turn.start({ text: 'tidy up the helpers in this module', turnId: 'p1' })
+  for await (const _ of $.turn.step({ turnId: 'p1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  await $.turn.start({ text: 'find the helpers', turnId: 'p1', agentId: 'a1' })
+  for await (const _ of $.turn.step({ turnId: 'p1', agentId: 'a1', index: 0, model: 'claude-haiku-5-5', effort: 'low', messageCount: 1 })) {
+    // drain
+  }
+  expect(judged).toBe(0)
+  expect(s.ran).toEqual([])
+  expect(s.sent).toEqual(['claude-opus-5-5', 'claude-haiku-5-5'])
+  expect(s.efforts).toEqual(['medium', 'low'])
+})
+
+test('a pin belongs to its chat: another session starts on Auto, the first keeps its pin (17p)', async ($: any, on: any) => {
+  const { clock } = engine(on)
+  let sid = 'A'
+  on('session.id', () => ({ value: sid }))
+  await $.command.run({ command: 'arne', args: 'pin opus high' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned opus · high')
+  sid = 'B'
+  expect((await $.command.run({ command: 'arne', args: '' })).text).not.toContain('pinned')
+  sid = 'A'
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned opus · high')
+})
+
+test('the judge gets the conversation so far ahead of the new prompt (17p)', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  const prompts: string[] = []
+  on('model.complete', (_$: unknown, e: { prompt: string }) => (prompts.push(e.prompt), { value: { text: '{"tier":"M","effort":"medium","reason":"x"}', isAnswered: true } }))
+  on('session.messages', () => ({
+    value: [
+      { role: 'user', text: 'build the routing plugin', toolUses: [] },
+      { role: 'assistant', text: 'ok', toolUses: [{ tool_use_id: 't', tool: 'Edit', input: { file_path: 'hooks/route.ts' } }] },
+      { role: 'user', text: 'now add the band', toolUses: [] },
+    ],
+  }))
+  await $.prompt.submit(typed('refactor the helpers in this module please'))
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain('Conversation so far:')
+  expect(prompts[0]).toContain('First prompt: build the routing plugin')
+  expect(prompts[0]).toContain('- now add the band')
+  expect(prompts[0]).toContain('Files touched: hooks/route.ts')
+  expect(prompts[0]).toContain('New prompt to judge:\nrefactor the helpers in this module please')
 })

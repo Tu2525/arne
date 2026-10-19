@@ -210,7 +210,11 @@ async function coldOffer($: any, now: number) {
   const until = c.warmUntil[c.model] ?? 0
   if (until > now || c.C < live.coldTokens) return undefined
   if ((await read($, coldDismissed)) === until) return undefined
-  return { c, ...coldAdvice(c.C, c.model, c.warmUntil, now) }
+  // Only when summarizing first is cheaper than the plain resend (17p): otherwise there is nothing to offer.
+  const advice = coldAdvice(c.C, c.model, c.warmUntil, now)
+  const resend = advice.rows.find(r => r.action === 'continue')!.first
+  const summary = advice.rows.find(r => r.action === 'compact')!.first
+  return summary < resend ? { c, ...advice } : undefined
 }
 
 // The one on/off answer every surface reads: the /arne reply, the band, the status line and the pane.
@@ -240,8 +244,8 @@ async function setPinPart($: any, part: Pin, move = true) {
   const next: Pin = { ...((await settings($)).pin ?? {}), ...part }
   if (next.tier === undefined) delete next.tier
   if (next.effort === undefined) delete next.effort
-  if (next.tier || next.effort) await $.store.set('pin', next)
-  else await $.store.delete('pin')
+  if (next.tier || next.effort) await $.store.set(await pinKey($), next)
+  else await $.store.delete(await pinKey($))
   await resume($)
   if (move && part.tier && tierOf(await $.session.model()) !== part.tier) await moveModel($, MODEL[part.tier])
   await showStatus($)
@@ -283,10 +287,16 @@ async function showStatus($: any) {
 const statusOf = (mode: Mode, model: string) =>
   mode === 'on' ? undefined : bandText({ off: mode === 'off', paused: mode === 'paused', routing: false, model, warmLeftMs: 0, C: 0 }).short
 
+// $.store is one JSON file for every session, so a pin is keyed by its chat: a new chat starts on Auto (17p).
+// ponytail: one key per pinned chat is never cleaned up; prune old keys if the store ever nears its 4 MiB cap.
+async function pinKey($: any): Promise<string> {
+  return `pin:${await $.session.id().catch(() => '')}`
+}
+
 async function settings($: any): Promise<Settings> {
   return {
     enabled: live.auto,
-    pin: ((await $.store.get('pin')) ?? null) as Pin | null,
+    pin: ((await $.store.get(await pinKey($))) ?? null) as Pin | null,
     backend: live.backend,
   }
 }
@@ -337,12 +347,38 @@ function projectContext($: any): Promise<string> {
   return projectCtx
 }
 
-function backendsOf($: any, backend: string): Backend[] {
+// The judge's view of the task so far (17p), so "continue", "do it" or "B" are read against the work in hand.
+// Built from the transcript each time: the first prompt, the last 3 prompts, the last verdict, files touched,
+// the context size. At most CARD_MAX characters (~1.5k tokens). '' when the transcript cannot be read.
+const CARD_MAX = 6000
+async function taskCard($: any, c: Cache | null): Promise<string> {
+  const msgs: any = await $.session.messages().catch(() => [])
+  if (!Array.isArray(msgs) || msgs.length === 0) return ''
+  // Typed prompts only: a user row that carries tool results is the engine's, not the person's.
+  const prompts = msgs.filter((m: any) => m.role === 'user' && m.text.trim() && !m.toolResults?.length).map((m: any) => m.text.trim())
+  const files = new Set<string>()
+  for (const m of msgs) for (const u of m.toolUses ?? []) {
+    const f = u.input?.file_path ?? u.input?.notebook_path ?? u.input?.path
+    if (typeof f === 'string') files.add(f)
+  }
+  const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
+  const lines = [
+    prompts[0] && `First prompt: ${clip(prompts[0], 1200)}`,
+    prompts.length > 1 && `Recent prompts:\n${prompts.slice(1).slice(-3).map((p: string) => `- ${clip(p, 600)}`).join('\n')}`,
+    prev && `Previous verdict: ${TIER_NAME_OF[prev.tier]} · ${prev.effort} (${prev.reason})`,
+    files.size && `Files touched: ${[...files].slice(-15).join(', ')}`,
+    c && `Context: ${Math.round(c.C / 1000)}k tokens`,
+  ].filter(Boolean)
+  return lines.length ? clip(`Conversation so far:\n${lines.join('\n')}`, CARD_MAX) : ''
+}
+
+function backendsOf($: any, backend: string, card = ''): Backend[] {
   const haiku: Backend = {
     name: 'haiku',
     ask: async text => {
+      const prompt = card ? `${card}\n\nNew prompt to judge:\n${text.slice(0, 4000)}` : text.slice(0, 4000)
       const r = await $.model.complete(
-        { model: 'haiku', prompt: text.slice(0, 4000), system: SYSTEM + (await projectContext($)), effort: 'low' },
+        { model: 'haiku', prompt, system: SYSTEM + (await projectContext($)), effort: 'low' },
         { timeoutMs: 3000 },
       )
       return r.isAnswered ? parseVerdict(r.text) : undefined
@@ -372,21 +408,22 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
   }
   // The band says so when Laya was picked but is not answering: the chain judges with Haiku instead.
   await update($, layaDown, () => s.backend === 'laya' && !layaUp)
-  // A hard pin (tier and effort) skips routing; a partial pin keeps routing for the part it leaves out.
+  // Any pin pins both parts and skips routing (17p): the part it leaves out stays what the session has now.
+  // A pin is the person's own pick, so it skips the floor and ceiling (how xhigh, max or a capped tier are reached).
   const pin = s.pin ?? undefined
-  const hard = pin?.tier && pin.effort ? { tier: pin.tier, effort: pin.effort } : undefined
-  const r = await route(text, { prev, paused: await read($, isPaused), pin: hard, backends: backendsOf($, s.backend) })
-  if (!r) return undefined
-  const d = {
-    ...r,
-    tier: clampTier(pin?.tier ?? r.tier, live.modelFloor, live.modelCeiling),
-    // A pinned effort is the person's own pick, so it skips the ceiling: that is how xhigh and max are reached.
-    effort: pin?.effort ?? clampEffort(r.effort, live.effortFloor, live.effortCeiling),
-    // Only a model pin is a pin for switching: it moves the real /model like any pin did.
-    source: pin?.tier ? 'pin' : r.source,
+  const c: Cache | null = await read($, cache)
+  let d: Decision
+  if (pin?.tier || pin?.effort) {
+    const effort = pin.effort ?? (((await read($, appEffort)) ?? 'medium') as Decision['effort'])
+    d = { tier: pin.tier ?? tierOf(await $.session.model()) ?? 'M', effort, reason: 'pinned', source: 'pin', keepEffort: !pin.effort }
+  } else {
+    const card = await taskCard($, c)
+    const r = await route(text, { prev, paused: await read($, isPaused), backends: backendsOf($, s.backend, card) })
+    if (!r) return undefined
+    d = { ...r, tier: clampTier(r.tier, live.modelFloor, live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
   }
   // Never route to a model whose window is smaller than the chat: a bigger tier takes the prompt instead.
-  const c: Cache | null = await read($, cache)
+  // This is the one thing that moves a pin, and the band then says why ("the chat needs a bigger window").
   const tier = c ? fitTier(d.tier, c.C) : d.tier
   const sized = tier === d.tier ? d : { ...d, tier, reason: 'window' }
   prev = sized
@@ -592,7 +629,7 @@ export const register: Register = (on, options) => {
     if ((await modeOf($)) !== 'on') return next(e)
     if (!(await read($, held)) && (await coldOffer($, await $.clock.now()))) {
       await update($, held, () => e.text)
-      return { drop: 'arne is holding your message: the cache is cold. Pick Compact & send or Send anyway above the prompt.' }
+      return { drop: 'arne is holding your message: the cache is cold. Pick Summarize, then send or Send as is above the prompt.' }
     }
     await update($, routing, () => true)
     const d = await decideMain($, e.text).finally(() => update($, routing, () => false))
@@ -633,7 +670,7 @@ export const register: Register = (on, options) => {
         return { text: `arne pinned to ${rest[0]} · ${effort}.` }
       }
       case 'unpin':
-        await $.store.delete('pin')
+        await $.store.delete(await pinKey($))
         return { text: 'arne unpinned.' }
       case 'backend': {
         const b = rest[0]
@@ -725,7 +762,8 @@ export const register: Register = (on, options) => {
         await update($, log, list => [...list, row].slice(-200))
         await appendLog($, { ...row, text: e.text, decided: decided ? MODEL[decided.tier] : undefined })
       }
-    } else if (live.subagents) {
+    } else if (live.subagents && !s.pin) {
+      // While a pin is set nothing is routed (17p): a subagent keeps the model it was spawned with.
       // Subagents set to Leave: no decision, so their steps keep the model they were spawned with.
       const agent = (await $.agent.list()).find(a => a.id === e.agentId)
       const d = await route(e.text, { agentType: agent?.type, backends: backendsOf($, s.backend) })
@@ -751,7 +789,7 @@ export const register: Register = (on, options) => {
     // stays). Subagents still get their model per request, since the picker cannot show them.
     const model = decision && !isMain ? MODEL[decision.tier] : e.model
     const routed = decision
-      ? { ...e, model, effort: effortOwned ? e.effort : tierOf(model) === 'S' ? undefined : decision.effort }
+      ? { ...e, model, effort: effortOwned || decision.keepEffort ? e.effort : tierOf(model) === 'S' ? undefined : decision.effort }
       : e
     const r = yield* next(routed)
     if (isMain) await cacheTouched($, routed.model, r.usage)
@@ -773,7 +811,10 @@ export const register: Register = (on, options) => {
     const c = await read($, cache)
     const forced = await read($, shown)
     // The band always draws, so the pickers are there before the first request too.
-    const now = await read($, clockNow)
+    // The atom read subscribes this render to the 1s tick; the time itself comes from the clock, since the
+    // tick only starts at session.start and a hot reload skips that (a frozen tick showed a stale cache state).
+    await read($, clockNow)
+    const now: number = await $.clock.now()
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
     const { Box, Button, Select, Text } = $.ui.resolve(e)
@@ -799,10 +840,9 @@ export const register: Register = (on, options) => {
       const row = offer?.rows.find(x => x.action === a)
       return row ? `$${dollars(row.first).toFixed(2)}` : ''
     }
-    const coldAgo = offer ? Math.max(0, Math.round((now - (offer.c.warmUntil[offer.c.model] ?? now)) / 60_000)) : 0
     const coldLine = offer
-      ? `Cache went cold ${coldAgo >= 60 ? `${Math.round(coldAgo / 60)}h` : `${coldAgo}m`} ago. ${cap(live.compactModel)} summary first costs ${money('compact')} instead of ${money('continue')} to resend.`
-      : 'Cache went cold. Your message is waiting.'
+      ? `The cache went cold, so your next message re-reads all ${Math.round(offer.c.C / 1000)}k tokens: ${money('continue')}. A ${cap(live.compactModel)} summary first costs ${money('compact')}.`
+      : 'The cache went cold. Your message is waiting.'
     const effortOn = await read($, effortless)
     const sample: Record<BandState, Parameters<typeof bandText>[0]> = {
       routing: { off: false, paused: false, routing: true, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 0, C: 0 },
@@ -902,18 +942,20 @@ export const register: Register = (on, options) => {
           )}
         {heldText &&
           banner('alert-held', coldLine, [
-            <Button key="send-anyway" plain label="Send anyway" onPress={() => sendAnyway($)} />,
-            <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactAndSend($)} />,
+            <Button key="send-anyway" plain label="Send as is" onPress={() => sendAnyway($)} />,
+            <Button key="compact-send" variant="primary" label="Summarize, then send" onPress={() => compactAndSend($)} />,
           ])}
         {offer &&
           !heldText &&
           banner('alert-cold', coldLine, [
-            <Button key="compact" variant="primary" label="Compact" onPress={() => compactNow($, '')} />,
+            <Button key="compact" variant="primary" label="Summarize" onPress={() => compactNow($, '')} />,
             <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
             <Button key="continue" plain role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
           ])}
+        {/* A big chat with a warm cache is never a reason for an alert (17p): only once it has gone cold. */}
         {band.state === 'heavy' &&
           c &&
+          left <= 0 &&
           !offer &&
           banner(
             'alert-heavy',
@@ -921,7 +963,7 @@ export const register: Register = (on, options) => {
             [
               <Button key="dismiss" plain role="dismiss" label="Dismiss" onPress={() => undefined} />,
               <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
-              <Button key="compact-send" variant="primary" label="Compact and send" onPress={() => compactThenContinue($)} />,
+              <Button key="compact-send" variant="primary" label="Summarize, then continue" onPress={() => compactThenContinue($)} />,
             ],
           )}
         <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>

@@ -33,6 +33,22 @@ test('continuations keep prev, else default', async () => {
   expect((await route('yes'))?.source).toBe('default')
 })
 
+test('a short follow-up keeps the last tier and asks no judge; a new task is judged (17p)', async () => {
+  const opus: Decision = { tier: 'L', effort: 'high', reason: 'x', source: 'haiku' }
+  let asked = 0
+  const counting: Backend = { name: 'haiku', ask: async () => (asked++, { tier: 'S', effort: 'low', reason: 'b' }) }
+  for (const t of ['continue', 'looks good, next one', 'that one, B']) {
+    const d = await route(t, { prev: opus, backends: [counting] })
+    expect(d?.tier).toBe('L')
+    expect(d?.effort).toBe('high')
+  }
+  expect(asked).toBe(0)
+  // After Haiku turns, a new hard task goes up; a new plain task is judged.
+  const haiku: Decision = { tier: 'S', effort: 'low', reason: 'x', source: 'haiku' }
+  expect((await route('design the plugin architecture for routing', { prev: haiku }))?.tier).toBe('L')
+  expect((await route('fix the parser bug in lexer.ts', { prev: haiku, backends: [says('M', 'haiku')] }))?.tier).toBe('M')
+})
+
 test('fallback chain', async () => {
   expect((await route('refactor the cache', { backends: [dead, silent, says('L', 'haiku')] }))?.source).toBe('haiku')
   expect((await route('refactor the cache', { backends: [dead, silent], prev }))?.source).toBe('prev')
