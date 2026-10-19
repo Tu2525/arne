@@ -363,3 +363,24 @@ test('the judge gets the conversation so far ahead of the new prompt (17p)', asy
   expect(prompts[0]).toContain('Files touched: hooks/route.ts')
   expect(prompts[0]).toContain('New prompt to judge:\nrefactor the helpers in this module please')
 })
+
+test('a finished turn logs its usage, and Stats and /arne stats show the estimate against Opus and Sonnet (17q)', async ($: any, on: any) => {
+  engine(on, 'claude-haiku-5-5')
+  // An in-memory disk, so the test never reads or writes the real decisions.jsonl.
+  const disk = new Map<string, string>()
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', (_$: unknown, e: { path: string }) => ({ value: disk.get(e.path) ?? '' }))
+  on('fs.write', (_$: unknown, e: { path: string; text: string }) => (disk.set(e.path, e.text), { value: undefined }))
+  on('turn.complete', (_$: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  const usage = { model: 'claude-haiku-5-5', input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 0 }
+  await $.turn.complete({ turnId: 's1', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, usage })
+  expect([...disk.values()].join('')).toContain('"type":"usage"')
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', requestId: 'arne-stats', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 40 } })
+  expect(await pane.find({ type: 'Text', text: 'Saved $0.10' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '83% less than $0.13' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Haiku' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^An estimate/ })).toBeDefined()
+  const text = (await $.command.run({ command: 'arne', args: 'stats' })).text
+  expect(text).toContain('estimate')
+  expect(text).toContain('Today: $0.02 spent over 1 turns')
+})

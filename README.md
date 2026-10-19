@@ -17,7 +17,11 @@ Then disable effortless if you have it, and restart.
 
 The band above the prompt is the control: **● Auto** turns routing on or off (or resumes it after you pick a model yourself), the model and effort pickers pin a choice (Auto unpins), **why** shows the last decision with 👍/👎, **cache** shows what a cold cache will cost, and **⚙** opens the settings. The same settings live in `/config`.
 
-`/arne` covers the same ground from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `why`, `log`, `backend haiku|heuristic|laya`, `settings`.
+`/arne` covers the same ground from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `why`, `log`, `stats`, `backend haiku|heuristic|laya`, `settings`. A pin belongs to its chat: a new chat starts on Auto.
+
+**Stats** (Settings → Stats, or `/arne stats`) shows what arne saved today, over 7 days and in all. It is an estimate, never an exact figure: each turn's real tokens are priced again as if the turn ran on Opus or Sonnet at medium effort. A different model would have written a different answer, so the real difference can't be known. Model switches and summaries count against arne, and turns logged before Stats existed are skipped.
+
+**Plugins can't move the app's model menu.** arne switches with the real `/model`, but the desktop app's model menu keeps showing your last pick there; the band says so when they differ.
 
 ## Credits
 

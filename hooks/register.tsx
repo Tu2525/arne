@@ -6,6 +6,8 @@ import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, cos
 import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
+import { parseUsage, periodStart, PERIODS, savedText, summarize, usageRow } from './stats'
+import type { Period, UsageRow } from './stats'
 import type { Cache, Row } from '../types'
 
 const LOG_FILE = '.claude/arne/decisions.jsonl' // under the home directory; local only, never shared
@@ -19,6 +21,7 @@ async function homePath($: any, p: string): Promise<string> {
 
 const PANE = 'arne-log'
 const SETTINGS = 'arne-settings'
+const STATS = 'arne-stats'
 
 const TIER_OF: Record<string, Tier> = { haiku: 'S', sonnet: 'M', opus: 'L' }
 
@@ -50,6 +53,8 @@ const layaDown = atom({ plugin: 'arne', key: 'layaDown' } as const, false)
 // What the desktop app's model picker shows: the session's first model, then each pick made in it
 // (PostModelSwitch source "sdk"). Plugins cannot move that picker, so arne's /model can differ from it.
 const appPicker = atom({ plugin: 'arne', key: 'appPicker' } as const, null)
+// The Stats pane's period (17q).
+const statsPeriod = atom({ plugin: 'arne', key: 'statsPeriod' } as const, 'week')
 const TIER_NAME_OF: Record<Tier, string> = { S: 'haiku', M: 'sonnet', L: 'opus' }
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
 
@@ -162,6 +167,7 @@ let expected: string | undefined
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
 let afterCompact = false // a compact just ran: the next prompt is a cache boundary
+let arneSwitched = false // arne's own /model ran: the next main turn's cache writes are the switch's (17q)
 // Decisions made at prompt.submit, by text, for the turn.start of the same prompt.
 const planned = new Map<string, Decision>()
 // Subagent decisions, by agentId, so each step of a run uses its turn's choice.
@@ -258,6 +264,7 @@ async function moveModel($: any, target: string) {
   switching = true
   try {
     await $.command.run({ command: 'model', args: target })
+    arneSwitched = true
   } catch {
     expected = was
     $.ui.toast(`arne: could not switch /model to ${shortModel(target)}`)
@@ -466,6 +473,7 @@ async function switchThenSend($: any, target: string | undefined, effort: Decisi
     switching = true
     try {
       await $.command.run({ command: 'model', args: target })
+      arneSwitched = true
     } catch {
       expected = was
       planned.delete(text) // decided for a model it is not on: turn.start decides again
@@ -489,13 +497,20 @@ async function routeAndSend($: any, text: string) {
 }
 
 // $.fs has no append: read, then write the whole file. ponytail: O(n) per turn, fine below ~10k rows.
-async function appendLog($: any, row: Row & { text: string; agent?: string; decided?: string }) {
+async function appendLog($: any, row: (Row & { text: string; agent?: string; decided?: string }) | UsageRow) {
   try {
     const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
     await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify(row) + '\n')
   } catch {
     // no log this time
   }
+}
+
+// Stats for one period, from the log's usage rows (17q). ponytail: reads the whole log per call; fine
+// below ~10k rows, keep running totals in the store if it ever gets slow.
+async function statsFor($: any, period: Period) {
+  const text: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
+  return summarize(parseUsage(text), periodStart(period, await $.clock.now()))
 }
 
 // A main-loop response landed: the answering model's cache is warm for one more TTL.
@@ -536,7 +551,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'arne',
-      description: 'Auto model and effort routing: on, off, pin, unpin, why, log, backend, debug',
+      description: 'Auto model and effort routing: on, off, pin, unpin, why, log, stats, backend, debug',
     })
     const eff = await effortlessOn($)
     await update($, effortless, () => eff)
@@ -577,7 +592,12 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
-    if (e.agentId === undefined) lastReason = e.reason
+    const isMain = e.agentId === undefined
+    if (isMain) lastReason = e.reason
+    // Each turn's real usage goes to the log, for Stats across reloads (17q). A turn with none is not logged.
+    const row = usageRow(isMain ? 'turn' : 'agent', await $.clock.now(), r.usage ?? e.usage, undefined, isMain && arneSwitched)
+    if (isMain) arneSwitched = false
+    if (row) await appendLog($, row)
     return r
   })
 
@@ -595,6 +615,8 @@ export const register: Register = (on, options) => {
         { timeoutMs: 120_000 },
       )
       if (!r.isAnswered || !r.text) return next(e)
+      const sum = usageRow('summary', await $.clock.now(), r.usage, MODEL[TIER_OF[live.compactModel] ?? 'S'])
+      if (sum) await appendLog($, sum)
       if (handoffSurface !== undefined) await saveHandoff($, r.text)
       const kept = e.messages.slice(-4)
       return {
@@ -683,6 +705,16 @@ export const register: Register = (on, options) => {
         }
         return { text: `arne backend: ${b}.` }
       }
+      case 'stats': {
+        const lines = await Promise.all(
+          PERIODS.map(async ([p, label]) => {
+            const st = await statsFor($, p)
+            const opus = savedText(st.spent, st.opus)
+            return `${label}: $${st.spent.toFixed(2)} spent over ${st.turns} turns. Against Opus · medium: ${opus.headline.toLowerCase()} (${opus.sub}). Against Sonnet · medium: ${savedText(st.spent, st.sonnet).headline.toLowerCase()}.`
+          }),
+        )
+        return { text: `arne stats (an estimate: each turn's real tokens, priced again on Opus or Sonnet):\n${lines.join('\n')}` }
+      }
       case 'why': {
         const l = await read($, last)
         return { text: l ? `${l.model} · ${l.effort}: ${l.reason} (${l.source})` : 'No decision yet.' }
@@ -714,7 +746,7 @@ export const register: Register = (on, options) => {
         const mode = await modeOf($)
         const state = mode === 'paused' ? 'paused (you picked a model; /arne on resumes)' : mode
         return {
-          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, pin, unpin, why, log, backend, debug.`,
+          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, pin, unpin, why, log, stats, backend, debug.`,
         }
       }
     }
@@ -1143,7 +1175,87 @@ export const register: Register = (on, options) => {
             {choice('Highest effort', 'effortCeiling', EFFORTS)}
           </Box>
         </Box>
-        <Text color="inactive">Also in /config.</Text>
+        <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
+          <Text color="inactive">Also in /config.</Text>
+          <Button key="open-stats" plain label="Stats" onPress={() => $.ui.open({ id: STATS, title: 'arne stats' })} />
+        </Box>
+      </Box>
+    )
+  })
+
+  // Stats (17q): what arne saved against running every turn on Opus or Sonnet at medium. An estimate, said so.
+  on('ui.render', { component: 'Pane', requestId: STATS }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const cols = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80)
+    const gui = e.surface !== 'terminal'
+    const period = (await read($, statsPeriod)) as Period
+    const st = await statsFor($, period)
+    const usd = (v: number) => `$${v.toFixed(2)}`
+    // Bars as text, so they follow the theme: one accent for arne, subtle for the baselines.
+    const room = Math.max(10, Math.min(40, cols - 24))
+    const max = Math.max(st.spent, st.sonnet, st.opus, 1e-9)
+    const bar = (v: number) => '█'.repeat(Math.max(v > 0 ? 1 : 0, Math.round((v / max) * room)))
+    const tile = (name: string, base: number) => {
+      const t = savedText(st.spent, base)
+      return (
+        <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1} flexGrow={1}>
+          <Text color="subtle">{`Against ${name}`}</Text>
+          <Text bold>{t.headline}</Text>
+          <Text color="subtle">{t.sub}</Text>
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
+          <Text bold>Stats</Text>
+          <Box flexDirection="row" columnGap={1}>
+            {PERIODS.map(([p, label]) =>
+              p === period ? (
+                <Button key={`period-${p}`} variant="secondary" label={label} onPress={() => update($, statsPeriod, () => p)} />
+              ) : (
+                <Button key={`period-${p}`} plain label={label} onPress={() => update($, statsPeriod, () => p)} />
+              ),
+            )}
+            <Button role="dismiss" plain label="Done" onPress={() => undefined} />
+          </Box>
+        </Box>
+        {st.turns === 0 && st.lines.length === 0 ? (
+          <Text color="subtle">No turns with usage in this period yet.</Text>
+        ) : (
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection={cols < 60 ? 'column' : 'row'} gap={1}>
+              {tile('Opus · medium', st.opus)}
+              {tile('Sonnet · medium', st.sonnet)}
+            </Box>
+            <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+              {([['With arne', st.spent, 'claude'], ['Sonnet · medium', st.sonnet, 'subtle'], ['Opus · medium', st.opus, 'subtle']] as const).map(([label, v, color]) => (
+                <Box key={`bar-${label}`} flexDirection="column">
+                  <Box flexDirection="row" justifyContent="space-between">
+                    <Text color={label === 'With arne' ? undefined : 'subtle'}>{label}</Text>
+                    <Text>{usd(v)}</Text>
+                  </Box>
+                  <Text color={color}>{bar(v)}</Text>
+                </Box>
+              ))}
+            </Box>
+            <Box flexDirection="column">
+              <Text color="subtle">Where it went</Text>
+              <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+                {st.lines.map(l => (
+                  <Box key={`line-${l.label}`} flexDirection="row" columnGap={2}>
+                    <Box flexGrow={1}>
+                      <Text>{l.label}</Text>
+                    </Box>
+                    <Text color="subtle">{l.label === 'Switches and summaries' ? String(l.count) : `${l.count} turn${l.count === 1 ? '' : 's'}`}</Text>
+                    <Text>{usd(l.cost)}</Text>
+                  </Box>
+                ))}
+              </Box>
+            </Box>
+          </Box>
+        )}
+        <Text color="subtle">An estimate: each turn's real tokens, priced again as if every turn ran on Opus at medium effort, or on Sonnet at medium effort. Model switches and summaries count against arne.</Text>
       </Box>
     )
   })
