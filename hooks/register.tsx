@@ -35,6 +35,10 @@ const clockNow = atom({ plugin: 'arne', key: 'now' } as const, 0)
 const coldDismissed = atom({ plugin: 'arne', key: 'coldDismissed' } as const, 0)
 const routing = atom({ plugin: 'arne', key: 'routing' } as const, false)
 const isOff = atom({ plugin: 'arne', key: 'isOff' } as const, false)
+// True while effortless is enabled: it writes effort, so arne routes models only.
+const effortless = atom({ plugin: 'arne', key: 'effortless' } as const, false)
+const EFFORTLESS = 'effortless@effortless'
+const SETTINGS_FILE = 'C:/Users/tarek/.claude/settings.json' // local only, same as LOG_FILE
 const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
 
@@ -42,6 +46,21 @@ const rowLabel = (row: { action: string; to?: string }) =>
   row.action === 'switch' ? `Switch to ${row.to}` : row.action === 'compact' ? 'Compact (Haiku summary)' : row.action === 'handoff' ? 'Handoff' : 'Continue'
 
 // /compact runs as the app's own command, so the idle wait and the app's own summary path apply.
+async function effortlessOn($: any): Promise<boolean> {
+  const text: string = await $.fs.read(SETTINGS_FILE).catch(() => '')
+  try {
+    return JSON.parse(text).enabledPlugins?.[EFFORTLESS] === true
+  } catch {
+    return false
+  }
+}
+
+// The state flips only at the next session start: effortless's hooks stay loaded until then.
+async function disableEffortless($: any) {
+  const r = await $.process.run(['claude', 'plugin', 'disable', EFFORTLESS], { timeoutMs: 60_000 }).catch(() => undefined)
+  $.ui.toast(r?.exitCode === 0 ? 'arne: effortless disabled. Restart to hand effort to arne.' : 'arne: could not disable effortless; disable it from the plugin list.')
+}
+
 async function compactNow($: any, note: string) {
   try {
     await $.command.run({ command: 'compact', args: note.trim() })
@@ -172,6 +191,8 @@ export const register: Register = (on, options) => {
       name: 'arne',
       description: 'Auto model and effort routing: on, off, pin, unpin, why, log, backend, debug',
     })
+    const eff = await effortlessOn($)
+    await update($, effortless, () => eff)
     // Drives the band's countdown. ponytail: a 1s state write; slow it down if redraws ever cost.
     $.clock.every(1000, async () => {
       if ((await read($, cache)) === null) return
@@ -419,9 +440,10 @@ export const register: Register = (on, options) => {
     const isMain = e.agentId === undefined
     const decision = isMain ? current : agents.get(e.agentId!)
 
-    // Haiku takes no effort setting.
+    // Haiku takes no effort setting. While effortless is on, it keeps the effort it set.
+    const effortOwned = await read($, effortless)
     const routed = decision
-      ? { ...e, model: MODEL[decision.tier], effort: decision.tier === 'S' ? undefined : decision.effort }
+      ? { ...e, model: MODEL[decision.tier], effort: effortOwned ? e.effort : decision.tier === 'S' ? undefined : decision.effort }
       : e
     if (isMain && decision) {
       const c = await read($, cache)
@@ -460,6 +482,7 @@ export const register: Register = (on, options) => {
     // Hidden until the cache warms again: the dismissal remembers which cold spell it was.
     const dismissed = c !== null && (await read($, coldDismissed)) === (c.warmUntil[c.model] ?? 0)
     const offer = isCold && !dismissed ? coldAdvice(c!.C, c!.model, c!.warmUntil, now) : undefined
+    const effortOn = await read($, effortless)
     const sample: Record<BandState, Parameters<typeof bandText>[0]> = {
       routing: { off: false, paused: false, routing: true, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 0, C: 0 },
       off: { off: true, paused: false, routing: false, model: 'claude-sonnet-5-5', warmLeftMs: 0, C: 0 },
@@ -483,6 +506,12 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Text dimColor>arne: {band.text}</Text>
+        {effortOn && (
+          <Box flexDirection="column">
+            <Text>effortless is on and sets effort too. Disable it, then restart, so arne can.</Text>
+            <Button label="Disable effortless" onPress={() => disableEffortless($)} />
+          </Box>
+        )}
         {offer && (
           <Box flexDirection="column">
             <Text>Cache is cold on a {Math.round(c!.C / 1000)}k chat. Next message, by cost (first request):</Text>
