@@ -8,7 +8,15 @@ import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
 import type { Cache, Row } from '../types'
 
-const LOG_FILE = 'C:/Users/tarek/.claude/arne/decisions.jsonl' // local only, never shared
+const LOG_FILE = '.claude/arne/decisions.jsonl' // under the home directory; local only, never shared
+
+// A path under the home directory, read at runtime; an absolute path (the bench sets one) stays as it is.
+async function homePath($: any, p: string): Promise<string> {
+  if (/^([A-Za-z]:)?\//.test(p)) return p
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
+  return home ? `${home.replace(/\\/g, '/').replace(/\/$/, '')}/${p}` : p
+}
+
 const PANE = 'arne-log'
 const SETTINGS = 'arne-settings'
 
@@ -45,7 +53,7 @@ const held = atom({ plugin: 'arne', key: 'held' } as const, null)
 // True while effortless is enabled: it writes effort, so arne routes models only.
 const effortless = atom({ plugin: 'arne', key: 'effortless' } as const, false)
 const EFFORTLESS = 'effortless@effortless'
-const SETTINGS_FILE = 'C:/Users/tarek/.claude/settings.json' // local only, same as LOG_FILE
+const SETTINGS_FILE = '.claude/settings.json' // under the home directory, same as LOG_FILE
 const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
 // The band's two expandable parts: the last decision's reason (why) and the cache's cold advice.
 const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
@@ -58,7 +66,7 @@ const rowLabel = (row: { action: string; to?: string }) =>
 
 // /compact runs as the app's own command, so the idle wait and the app's own summary path apply.
 async function effortlessOn($: any): Promise<boolean> {
-  const text: string = await $.fs.read(SETTINGS_FILE).catch(() => '')
+  const text: string = await $.fs.read(await homePath($, SETTINGS_FILE)).catch(() => '')
   try {
     return JSON.parse(text).enabledPlugins?.[EFFORTLESS] === true
   } catch {
@@ -232,8 +240,8 @@ async function feedback($: any, verdict: 'up' | 'down') {
   const l = await read($, last)
   if (!l) return
   try {
-    const old: string = await $.fs.read(LOG_FILE).catch(() => '')
-    await $.fs.write(LOG_FILE, old + JSON.stringify({ type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }) + '\n')
+    const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
+    await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify({ type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }) + '\n')
     $.ui.toast(`arne: noted ${verdict === 'up' ? '👍' : '👎'} for the last decision`)
   } catch {
     $.ui.toast('arne: could not log that feedback')
@@ -380,8 +388,8 @@ async function routeAndSend($: any, text: string) {
 // $.fs has no append: read, then write the whole file. ponytail: O(n) per turn, fine below ~10k rows.
 async function appendLog($: any, row: Row & { text: string; agent?: string; decided?: string }) {
   try {
-    const old: string = await $.fs.read(LOG_FILE).catch(() => '')
-    await $.fs.write(LOG_FILE, old + JSON.stringify(row) + '\n')
+    const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
+    await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify(row) + '\n')
   } catch {
     // no log this time
   }
