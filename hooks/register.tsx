@@ -869,7 +869,7 @@ export const register: Register = (on, options) => {
           </Box>
         ) : (
           <Box flexDirection="row" justifyContent="space-between">
-            <Button key="band" plain label={open ? 'Close arne panel' : 'Open arne panel'} onPress={toggle}>
+            <Button key="band" plain onPress={toggle}>
               <Text color="claude">arne</Text>
               {'  '}
               {l || band.state === 'routing'
@@ -881,7 +881,7 @@ export const register: Register = (on, options) => {
                 : <Text color="subtle">auto</Text>}
             </Button>
             {cacheWords && (
-              <Button key="band-cache" plain label={cacheWords} dimColor={!cool} onPress={toggle}>
+              <Button key="band-cache" plain onPress={toggle}>
                 <Text color={cool ? 'warning' : 'subtle'}>{cacheWords}</Text>
               </Button>
             )}
