@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText } from './econ'
+import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText, clampEffort, clampTier } from './econ'
 
 const near = (got: number, want: number) => expect(Math.abs(got - want) / want <= 0.05).toBe(true)
 
@@ -60,4 +60,12 @@ test('bandText states', () => {
   expect(bandText({ ...base, warmLeftMs: 0, C: 120_000 }).state).toBe('cold')
   expect(bandText({ ...base, C: 160_000 }).state).toBe('heavy')
   expect(bandText({ ...base, off: true }).state).toBe('off')
+})
+
+test('clamps keep tiers and efforts inside the floor and ceiling', () => {
+  expect(clampTier('S', 'sonnet', 'opus')).toBe('M')
+  expect(clampTier('L', 'haiku', 'sonnet')).toBe('M')
+  expect(clampTier('M', 'haiku', 'opus')).toBe('M')
+  expect(clampEffort('low', 'medium', 'high')).toBe('medium')
+  expect(clampEffort('max', 'low', 'high')).toBe('high')
 })

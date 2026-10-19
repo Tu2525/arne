@@ -1,6 +1,17 @@
 {
   "name": "arne",
-  "version": "0.1.0",
-  "description": "Routes each prompt and subagent run to the cheapest model and effort that can handle it.",
-  "types": "./types/index.d.ts"
+  "version": "0.2.0",
+  "description": "Routes each prompt and subagent run to the cheapest model and effort that can handle it, and manages the cache, compaction and model switches around it.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "auto": { "type": "boolean", "title": "Auto routing", "description": "Route each prompt and subagent run. Off leaves the session model alone.", "default": true },
+    "backend": { "type": "string", "title": "Classifier", "description": "Who decides the tier. laya needs laya-serve installed.", "options": ["haiku", "heuristic", "laya"], "default": "haiku" },
+    "modelFloor": { "type": "string", "title": "Lowest model", "description": "Never route below this model.", "options": ["haiku", "sonnet", "opus"], "default": "haiku" },
+    "modelCeiling": { "type": "string", "title": "Highest model", "description": "Never route above this model.", "options": ["haiku", "sonnet", "opus"], "default": "opus" },
+    "effortFloor": { "type": "string", "title": "Lowest effort", "description": "Never think less than this.", "options": ["low", "medium", "high"], "default": "low" },
+    "effortCeiling": { "type": "string", "title": "Highest effort", "description": "Never think more than this.", "options": ["low", "medium", "high"], "default": "high" },
+    "compactModel": { "type": "string", "title": "Compaction model", "description": "The model that writes compaction summaries.", "options": ["haiku", "sonnet"], "default": "haiku" },
+    "coldTokens": { "type": "number", "title": "Cold offer above (tokens)", "description": "Offer the cold-cache actions on chats at least this big.", "default": 30000 },
+    "heavyTokens": { "type": "number", "title": "Heavy warning above (tokens)", "description": "The band warns about a chat this big.", "default": 150000 }
+  }
 }

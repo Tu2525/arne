@@ -147,6 +147,7 @@ export type BandInput = {
   warmLeftMs: number // ms until the chat's model cache goes cold; 0 or less = cold
   C: number
   flash?: boolean
+  heavyTokens?: number
 }
 
 const SHORT: Record<string, string> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus' }
@@ -164,10 +165,32 @@ export function bandText(i: BandInput): { state: BandState; text: string; short:
   if (i.routing) return { state: 'routing', text: 'routing…', short: 'arne …' }
   if (i.paused) return { state: 'paused', text: `paused · ${label} (manual /model; /arne on resumes)`, short: 'arne paused' }
   if (i.C > 0 && i.warmLeftMs <= 0) return { state: 'cold', text: `cold · ${k} · see the offer below`, short: `arne cold ${k}` }
-  if (i.C >= HEAVY_TOKENS) return { state: 'heavy', text: `${label} · heavy ${k} · ◔ ${pct}`, short: `arne ${shortModel(i.model)}·${shortEffort(i.effort)} heavy` }
+  if (i.C >= (i.heavyTokens ?? HEAVY_TOKENS)) return { state: 'heavy', text: `${label} · heavy ${k} · ◔ ${pct}`, short: `arne ${shortModel(i.model)}·${shortEffort(i.effort)} heavy` }
   return {
     state: 'normal',
     text: `${label} · cache ${mmss(i.warmLeftMs)} · ◔ ${pct}${flash}`,
     short: `arne ${shortModel(i.model)}·${shortEffort(i.effort)}${flash}`,
   }
+}
+
+// --- Settings clamps (step 15) ---
+
+const TIER_NAME: Record<string, Tier> = { haiku: 'S', sonnet: 'M', opus: 'L' }
+const TIER_RANK: Record<Tier, number> = { S: 0, M: 1, L: 2 }
+const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
+
+/** A tier kept between the floor and ceiling model names (haiku|sonnet|opus). */
+export function clampTier(tier: Tier, floor: string, ceiling: string): Tier {
+  const lo = TIER_RANK[TIER_NAME[floor] ?? 'S']
+  const hi = TIER_RANK[TIER_NAME[ceiling] ?? 'L']
+  const r = Math.min(Math.max(TIER_RANK[tier], lo), Math.max(lo, hi))
+  return (['S', 'M', 'L'] as Tier[])[r]
+}
+
+/** An effort kept between the floor and ceiling names. */
+export function clampEffort<E extends string>(effort: E, floor: string, ceiling: string): E {
+  const lo = EFFORT_RANK[floor] ?? 0
+  const hi = EFFORT_RANK[ceiling] ?? 4
+  const r = Math.min(Math.max(EFFORT_RANK[effort] ?? 1, lo), Math.max(lo, hi))
+  return (Object.keys(EFFORT_RANK).find(k => EFFORT_RANK[k] === r) ?? effort) as E
 }

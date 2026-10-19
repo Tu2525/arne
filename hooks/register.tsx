@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { bandText, CACHE_TTL, coldAdvice, contextOf, dollars, mmss, nextTtl, planSwitch, summaryPrompt, tierOf } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, dollars, mmss, nextTtl, planSwitch, summaryPrompt, tierOf } from './econ'
 import type { BandState } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
@@ -10,6 +10,22 @@ import type { Cache, Row } from '../types'
 
 const LOG_FILE = 'C:/Users/tarek/.claude/arne/decisions.jsonl' // local only, never shared
 const PANE = 'arne-log'
+const SETTINGS = 'arne-settings'
+
+// What each row cycles through in the ⚙ pane: options for a string, a step for a number, a flip for a boolean.
+const CHOICES: Partial<Record<keyof Live, unknown[]>> = {
+  backend: ['haiku', 'heuristic', 'laya'],
+  modelFloor: ['haiku', 'sonnet', 'opus'],
+  modelCeiling: ['haiku', 'sonnet', 'opus'],
+  effortFloor: ['low', 'medium', 'high'],
+  effortCeiling: ['low', 'medium', 'high'],
+  compactModel: ['haiku', 'sonnet'],
+}
+const STEP: Partial<Record<keyof Live, number[]>> = {
+  coldTokens: [15_000, 30_000, 60_000],
+  heavyTokens: [100_000, 150_000, 200_000],
+}
+const nextOf = <T,>(list: T[], v: T): T => list[(list.indexOf(v) + 1) % list.length]
 const TIER_OF: Record<string, Tier> = { haiku: 'S', sonnet: 'M', opus: 'L' }
 
 const last = atom({ plugin: 'arne', key: 'last' } as const, null)
@@ -21,9 +37,6 @@ const routing = atom({ plugin: 'arne', key: 'routing' } as const, false)
 const isOff = atom({ plugin: 'arne', key: 'isOff' } as const, false)
 const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
-
-// A cold chat under this size is cheap to re-warm: no offer.
-const COLD_MIN_TOKENS = 30_000
 
 const rowLabel = (row: { action: string; to?: string }) =>
   row.action === 'switch' ? `Switch to ${row.to}` : row.action === 'compact' ? 'Compact (Haiku summary)' : row.action === 'handoff' ? 'Handoff' : 'Continue'
@@ -52,11 +65,38 @@ const agents = new Map<string, Decision | undefined>()
 type Pin = { tier: Tier; effort: Decision['effort'] }
 type Settings = { enabled: boolean; pin: Pin | null; backend: string }
 
+// The userConfig values, as the engine holds them. /config and the ⚙ pane both write through
+// $.config.set, which lands in the config.set hook below and keeps this copy in step.
+type Live = {
+  auto: boolean
+  backend: string
+  modelFloor: string
+  modelCeiling: string
+  effortFloor: string
+  effortCeiling: string
+  compactModel: string
+  coldTokens: number
+  heavyTokens: number
+}
+const DEFAULTS: Live = {
+  auto: true,
+  backend: 'haiku',
+  modelFloor: 'haiku',
+  modelCeiling: 'opus',
+  effortFloor: 'low',
+  effortCeiling: 'high',
+  compactModel: 'haiku',
+  coldTokens: 30_000,
+  heavyTokens: 150_000,
+}
+let live: Live = { ...DEFAULTS }
+const FIELDS = Object.keys(DEFAULTS) as (keyof Live)[]
+
 async function settings($: any): Promise<Settings> {
   return {
-    enabled: ((await $.store.get('enabled')) ?? true) as boolean,
+    enabled: live.auto,
     pin: ((await $.store.get('pin')) ?? null) as Pin | null,
-    backend: ((await $.store.get('backend')) ?? 'haiku') as string,
+    backend: live.backend,
   }
 }
 
@@ -114,7 +154,19 @@ async function cacheTouched($: any, model: string, usage: unknown) {
   await update($, clockNow, () => now)
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  live = { ...DEFAULTS, ...(options as Partial<Live>) }
+
+  // Every write to an arne.* row lands here, from /config or the ⚙ pane alike.
+  on('config.set', async ($, e, next) => {
+    const r = await next(e)
+    const field = e.key.startsWith('arne.') ? (e.key.slice(5) as keyof Live) : undefined
+    if (field && FIELDS.includes(field) && !('deny' in r)) {
+      ;(live as Record<string, unknown>)[field] = r.value
+    }
+    return r
+  }).catch(($, e, next) => next(e))
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'arne',
@@ -164,7 +216,7 @@ export const register: Register = on => {
     try {
       const r = await $.model.complete(
         {
-          model: 'haiku',
+          model: live.compactModel,
           prompt: summaryPrompt(e.messages),
           system: 'Summarize this coding conversation for its next turn: goal, decisions and why, files changed (paths), exact errors, open questions, next step. Plain text, under 1500 words.' + (e.instructions ? ` Keep: ${e.instructions}` : ''),
           effort: 'low',
@@ -195,13 +247,16 @@ export const register: Register = on => {
 
     switch (sub) {
       case 'on':
-        await $.store.set('enabled', true)
+        await $.config.set({ key: 'arne.auto', value: true })
         paused = false
         baseline = await $.session.model()
         return { text: 'arne on.' }
       case 'off':
-        await $.store.set('enabled', false)
+        await $.config.set({ key: 'arne.auto', value: false })
         return { text: 'arne off. Requests use the session model.' }
+      case 'settings':
+        await $.ui.open({ id: SETTINGS, title: 'arne settings' })
+        return { text: 'arne settings opened. Changes here match /config.' }
       case 'pin': {
         const tier = TIER_OF[rest[0]]
         if (!tier) return { text: 'Usage: /arne pin haiku|sonnet|opus [low|medium|high]' }
@@ -299,9 +354,15 @@ export const register: Register = on => {
       if (baseline !== undefined && model !== baseline && !pendingSwitch) paused = true
       baseline ??= model
 
-      const decided = s.enabled
+      const routed0 = s.enabled
         ? await route(e.text, { prev, paused, pin: s.pin ?? undefined, backends })
         : undefined
+      // The floor and ceiling bind every decision, pins included.
+      const decided = routed0 && {
+        ...routed0,
+        tier: clampTier(routed0.tier, live.modelFloor, live.modelCeiling),
+        effort: clampEffort(routed0.effort, live.effortFloor, live.effortCeiling),
+      }
       if (decided) prev = decided
       current = decided
       await update($, routing, () => false)
@@ -394,7 +455,8 @@ export const register: Register = on => {
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
     const { Box, Button, Text } = $.ui.resolve(e)
-    const isCold = !!c && left <= 0 && c.C >= COLD_MIN_TOKENS
+    // A cold chat under coldTokens is cheap to re-warm: no offer.
+    const isCold = !!c && left <= 0 && c.C >= live.coldTokens
     // Hidden until the cache warms again: the dismissal remembers which cold spell it was.
     const dismissed = c !== null && (await read($, coldDismissed)) === (c.warmUntil[c.model] ?? 0)
     const offer = isCold && !dismissed ? coldAdvice(c!.C, c!.model, c!.warmUntil, now) : undefined
@@ -416,6 +478,7 @@ export const register: Register = on => {
           effort: l?.effort,
           warmLeftMs: left,
           C: c?.C ?? 0,
+          heavyTokens: live.heavyTokens,
         })
     return (
       <Box flexDirection="column">
@@ -442,6 +505,24 @@ export const register: Register = on => {
             </Box>
           </Box>
         )}
+      </Box>
+    )
+  })
+
+  // The ⚙ pane: each row cycles its value through $.config.set, so /config and the pane never disagree.
+  on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const set = (key: keyof Live, value: unknown) => () => $.config.set({ key: `arne.${key}`, value })
+    return (
+      <Box flexDirection="column">
+        <Button label={`Auto routing: ${live.auto ? 'on' : 'off'}`} onPress={set('auto', !live.auto)} />
+        {(Object.keys(CHOICES) as (keyof Live)[]).map(k => (
+          <Button key={k} label={`${k}: ${String(live[k])}`} onPress={set(k, nextOf(CHOICES[k]!, live[k]))} />
+        ))}
+        {(Object.keys(STEP) as (keyof Live)[]).map(k => (
+          <Button key={k} label={`${k}: ${live[k].toLocaleString('en-US')}`} onPress={set(k, nextOf(STEP[k]!, live[k]))} />
+        ))}
+        <Text dimColor>Each press moves one step. The same values live in /config.</Text>
       </Box>
     )
   })
