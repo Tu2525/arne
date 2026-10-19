@@ -1,0 +1,6 @@
+{
+  "name": "arne",
+  "version": "0.1.0",
+  "description": "Routes each prompt and subagent run to the cheapest model and effort that can handle it.",
+  "types": "./types/index.d.ts"
+}

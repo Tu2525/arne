@@ -1,0 +1,66 @@
+import { expect, test } from 'claude-code/testing'
+
+import { layaVerdict, parseVerdict } from './backends'
+
+import { route, MODEL } from './route'
+import type { Backend, Decision } from './route'
+
+const prev: Decision = { tier: 'M', effort: 'medium', reason: 'x', source: 'haiku' }
+const says = (tier: 'S' | 'M' | 'L', name = 'b'): Backend => ({
+  name,
+  ask: async () => ({ tier, effort: 'medium', reason: 'backend' }),
+})
+const dead: Backend = { name: 'dead', ask: async () => { throw new Error('timeout') } }
+const silent: Backend = { name: 'silent', ask: async () => undefined }
+
+test('fast path table', async () => {
+  const table: [string, string][] = [
+    ['fix the typo in README', 'S'],
+    ['rename foo to bar', 'S'],
+    ['what is a mutex', 'S'],
+    ['design the auth layer', 'L'],
+    ['why does this deadlock', 'L'],
+    ['what is the security risk here', 'L'],
+    ['x'.repeat(2500), 'L'],
+  ]
+  for (const [text, tier] of table) expect((await route(text))?.tier).toBe(tier)
+})
+
+test('continuations keep prev, else default', async () => {
+  for (const t of ['', 'yes', 'ok do it', 'Continue.']) {
+    expect((await route(t, { prev }))?.source).toBe('prev')
+  }
+  expect((await route('yes'))?.source).toBe('default')
+})
+
+test('fallback chain', async () => {
+  expect((await route('refactor the cache', { backends: [dead, silent, says('L', 'haiku')] }))?.source).toBe('haiku')
+  expect((await route('refactor the cache', { backends: [dead, silent], prev }))?.source).toBe('prev')
+  expect((await route('refactor the cache', { backends: [dead] }))?.source).toBe('default')
+})
+
+test('pin beats paused beats fast path', async () => {
+  const pin = { tier: 'L' as const, effort: 'high' as const }
+  expect((await route('fix typo', { pin, paused: true }))?.source).toBe('pin')
+  expect(await route('fix typo', { paused: true })).toBe(undefined)
+})
+
+test('subagent priors', async () => {
+  expect((await route('find usages', { agentType: 'Explore', backends: [says('M')] }))?.tier).toBe('S')
+  expect((await route('find usages', { agentType: 'Explore', backends: [says('L')] }))?.tier).toBe('L')
+  expect((await route('anything', { agentType: 'Plan' }))?.tier).toBe('L')
+  expect(await route('x', { agentType: 'Explore', paused: true })).not.toBe(undefined)
+  expect(MODEL.S).toBe('claude-haiku-5-5')
+})
+
+test('verdict parsing rejects junk', async () => {
+  expect(parseVerdict('{"tier":"M","effort":"low","reason":"ok"}')?.tier).toBe('M')
+  expect(parseVerdict('sure: {"tier":"X","effort":"low"}')).toBe(undefined)
+  expect(parseVerdict('no json')).toBe(undefined)
+})
+
+test('laya answers map to a verdict, abstention falls through', async () => {
+  expect(layaVerdict({ tier: { choice: 'L' }, effort: { score: 2 } })?.effort).toBe('high')
+  expect(layaVerdict({ tier: { choice: 'S', abstention: true }, effort: { score: 0 } })).toBe(undefined)
+  expect(layaVerdict(undefined)).toBe(undefined)
+})
