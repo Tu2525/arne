@@ -47,6 +47,10 @@ const effortless = atom({ plugin: 'arne', key: 'effortless' } as const, false)
 const EFFORTLESS = 'effortless@effortless'
 const SETTINGS_FILE = 'C:/Users/tarek/.claude/settings.json' // local only, same as LOG_FILE
 const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
+// The band's two expandable parts: the last decision's reason (why) and the cache's cold advice.
+const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
+const cacheOpen = atom({ plugin: 'arne', key: 'cacheOpen' } as const, false)
+const TIER_NAME_OF: Record<Tier, string> = { S: 'haiku', M: 'sonnet', L: 'opus' }
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
 
 const rowLabel = (row: { action: string; to?: string }) =>
@@ -126,7 +130,8 @@ const planned = new Map<string, Decision>()
 // Subagent decisions, by agentId, so each step of a run uses its turn's choice.
 const agents = new Map<string, Decision | undefined>()
 
-type Pin = { tier: Tier; effort: Decision['effort'] }
+// The band's pickers pin a tier, an effort, or both; the part left out is arne's to decide.
+type Pin = { tier?: Tier; effort?: Decision['effort'] }
 type Settings = { enabled: boolean; pin: Pin | null; backend: string }
 
 // The userConfig values, as the engine holds them. /config and the ⚙ pane both write through
@@ -180,6 +185,59 @@ async function modeOf($: any): Promise<Mode> {
 async function resume($: any) {
   await update($, isPaused, () => false)
   expected = await $.session.model()
+}
+
+// The band's Auto button: on turns off, off or paused turns on (a pause resumes).
+async function toggleAuto($: any) {
+  const mode = await modeOf($)
+  await $.config.set({ key: 'arne.auto', value: mode !== 'on' })
+  if (mode !== 'on') await resume($)
+  await showStatus($)
+}
+
+// Sets one part of the pin and keeps the other; a pin with neither part left is removed. A pin ends a pause.
+async function setPinPart($: any, part: Pin) {
+  const next: Pin = { ...((await settings($)).pin ?? {}), ...part }
+  if (next.tier === undefined) delete next.tier
+  if (next.effort === undefined) delete next.effort
+  if (next.tier || next.effort) await $.store.set('pin', next)
+  else await $.store.delete('pin')
+  await resume($)
+  await showStatus($)
+}
+
+// The real /model moves now, marked as arne's own so PostModelSwitch does not pause arne.
+async function moveModel($: any, target: string) {
+  const was = expected
+  expected = target
+  switching = true
+  try {
+    await $.command.run({ command: 'model', args: target })
+  } catch {
+    expected = was
+    $.ui.toast(`arne: could not switch /model to ${shortModel(target)}`)
+  } finally {
+    switching = false
+  }
+}
+
+// Reason and tokens of the last main decision, for the band's why row and its hover card.
+function whyText(l: Row | null, pinned: boolean) {
+  if (!l) return 'No decision yet.'
+  return `${pinned ? 'You pinned it. ' : ''}${shortModel(l.model)} · ${l.effort}: ${l.reason} (${l.source}) · out ${l.out} tokens`
+}
+
+// 👍 / 👎 on the last decision: a correction label for the classifier, written beside the log rows.
+async function feedback($: any, verdict: 'up' | 'down') {
+  const l = await read($, last)
+  if (!l) return
+  try {
+    const old: string = await $.fs.read(LOG_FILE).catch(() => '')
+    await $.fs.write(LOG_FILE, old + JSON.stringify({ type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }) + '\n')
+    $.ui.toast(`arne: noted ${verdict === 'up' ? '👍' : '👎'} for the last decision`)
+  } catch {
+    $.ui.toast('arne: could not log that feedback')
+  }
 }
 
 async function showStatus($: any) {
@@ -262,12 +320,17 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
     layaUp = await layaHealthy($)
     if (!layaUp) void startLaya($)
   }
-  const r = await route(text, { prev, paused: await read($, isPaused), pin: s.pin ?? undefined, backends: backendsOf($, s.backend) })
+  // A hard pin (tier and effort) skips routing; a partial pin keeps routing for the part it leaves out.
+  const pin = s.pin ?? undefined
+  const hard = pin?.tier && pin.effort ? { tier: pin.tier, effort: pin.effort } : undefined
+  const r = await route(text, { prev, paused: await read($, isPaused), pin: hard, backends: backendsOf($, s.backend) })
   if (!r) return undefined
   const d = {
     ...r,
-    tier: clampTier(r.tier, live.modelFloor, live.modelCeiling),
-    effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling),
+    tier: clampTier(pin?.tier ?? r.tier, live.modelFloor, live.modelCeiling),
+    effort: clampEffort(pin?.effort ?? r.effort, live.effortFloor, live.effortCeiling),
+    // Only a model pin is a pin for switching: it moves the real /model like any pin did.
+    source: pin?.tier ? 'pin' : r.source,
   }
   prev = d
   return d
@@ -526,7 +589,7 @@ export const register: Register = (on, options) => {
         const mode = await modeOf($)
         const state = mode === 'paused' ? 'paused (you picked a model; /arne on resumes)' : mode
         return {
-          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${s.pin.tier}` : ''}. Subcommands: on, off, pin, unpin, why, log, backend, debug.`,
+          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, pin, unpin, why, log, backend, debug.`,
         }
       }
     }
@@ -628,13 +691,16 @@ export const register: Register = (on, options) => {
     const l = await read($, last)
     const c = await read($, cache)
     const forced = await read($, shown)
-    if (!l && !c && !forced) return next(e)
+    // The band always draws, so the pickers are there before the first request too.
     const now = await read($, clockNow)
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Select, Text } = $.ui.resolve(e)
     // A cold chat under coldTokens is cheap to re-warm: no offer. A dismissal lasts until the cache warms again.
     const heldText = await read($, held)
+    const pin = (await settings($)).pin
+    const whyIsOpen = await read($, whyOpen)
+    const cacheIsOpen = await read($, cacheOpen)
     const offer = await coldOffer($, now)
     // The held prompt's two ways out, priced: the compact row and the plain re-warm.
     const priced = (a: 'compact' | 'continue') => {
@@ -665,9 +731,78 @@ export const register: Register = (on, options) => {
           C: c?.C ?? 0,
           heavyTokens: live.heavyTokens,
         })
+    // The resting line: every part clickable. Hover on a picker shows its reason, as a card over the line.
+    // The Auto label stays short so the row does not shift between states; a pause explains itself on the alert line above.
+    const autoLabel = mode === 'on' ? '● Auto' : mode === 'off' ? '○ Auto' : '⏸ Resume'
+    const card = (key: string) => (
+      <Box key={`card-${key}`} position="absolute" top={1} left={0} display="none" hover={{ display: 'flex', scope: 'arne-pick' }}>
+        <Text>{whyText(l, Boolean(pin))}</Text>
+      </Box>
+    )
+    const cacheLabel = `${left > 0 && left < 5 * 60_000 ? '⚠ ' : ''}cache ${left > 0 ? mmss(left) : 'cold'}`
+    const costRows = cacheIsOpen && c ? coldAdvice(c.C, c.model, c.warmUntil, now).rows : []
     return (
       <Box flexDirection="column">
-        <Text dimColor>arne: {band.text}</Text>
+        {(band.state === 'cold' || band.state === 'heavy' || band.state === 'paused' || band.state === 'off') && (
+          <Text dimColor>arne: {band.text}</Text>
+        )}
+        <Box flexDirection="row" gap={1}>
+          <Button key="auto" variant={mode === 'paused' ? 'primary' : 'secondary'} label={autoLabel} onPress={() => toggleAuto($)} />
+          <Box key="pick-model" hover={{ scope: 'arne-pick' }}>
+            <Select
+              key="model"
+              label={pin?.tier ? '📌' : ''}
+              options={[
+                { value: 'auto', label: 'Auto' },
+                { value: 'haiku', label: 'Haiku' },
+                { value: 'sonnet', label: 'Sonnet' },
+                { value: 'opus', label: 'Opus' },
+              ]}
+              value={pin?.tier ? TIER_NAME_OF[pin.tier] : 'auto'}
+              onSelect={(value: string) => {
+                const tier = TIER_OF[value]
+                void setPinPart($, { tier }).then(() => (tier ? moveModel($, MODEL[tier]) : undefined))
+              }}
+            />
+            {card('model')}
+          </Box>
+          <Box key="pick-effort" hover={{ scope: 'arne-pick' }}>
+            <Select
+              key="effort"
+              label={pin?.effort ? '📌' : ''}
+              options={[
+                { value: 'auto', label: 'Auto' },
+                { value: 'low', label: 'low' },
+                { value: 'medium', label: 'medium' },
+                { value: 'high', label: 'high' },
+              ]}
+              value={pin?.effort ?? 'auto'}
+              onSelect={(value: string) => void setPinPart($, { effort: value === 'auto' ? undefined : (value as Pin['effort']) })}
+            />
+            {card('effort')}
+          </Box>
+          <Button key="cache" label={cacheLabel} onPress={() => update($, cacheOpen, o => !o)} />
+          <Button key="why" label={whyIsOpen ? 'why ▴' : 'why ▾'} onPress={() => update($, whyOpen, o => !o)} />
+          <Button key="gear" label="⚙" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
+        </Box>
+        {whyIsOpen && (
+          <Box flexDirection="column">
+            <Text dimColor>{whyText(l, Boolean(pin))}</Text>
+            <Box gap={1}>
+              <Button key="up" label="👍" onPress={() => feedback($, 'up')} />
+              <Button key="down" label="👎" onPress={() => feedback($, 'down')} />
+            </Box>
+          </Box>
+        )}
+        {costRows.length > 0 && (
+          <Box flexDirection="column">
+            {costRows.slice(0, 3).map(row => (
+              <Text key={`cost-${row.action}-${row.to ?? ''}`} dimColor>
+                {rowLabel(row)}: ${dollars(row.first).toFixed(3)}
+              </Text>
+            ))}
+          </Box>
+        )}
         {effortOn && (
           <Box flexDirection="column">
             <Text>effortless is on and sets effort too. Disable it, then restart, so arne can.</Text>

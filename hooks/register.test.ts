@@ -79,3 +79,26 @@ test('a model the person picks pauses arne, and every surface says so (17d)', as
   await $.command.run({ command: 'arne', args: 'on' })
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('arne on')
 })
+
+test('the band pickers pin a model by one pick, move /model at once, and Auto unpins (17e)', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  await $.command.run({ command: 'arne', args: '' })
+  await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
+  const settle = async () => {
+    for (let i = 0; i < 3; i++) await clock.settle()
+  }
+  await $.ui.select({ plugin: 'arne', key: 'model', value: 'haiku' })
+  await settle()
+  expect(s.ran).toEqual(['/model claude-haiku-5-5'])
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned haiku')
+
+  // Effort alone: the model pin stays, and the prompt is routed with the pinned tier.
+  await $.ui.select({ plugin: 'arne', key: 'effort', value: 'high' })
+  await settle()
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned haiku · high')
+
+  await $.ui.select({ plugin: 'arne', key: 'model', value: 'auto' })
+  await $.ui.select({ plugin: 'arne', key: 'effort', value: 'auto' })
+  await settle()
+  expect((await $.command.run({ command: 'arne', args: '' })).text).not.toContain('pinned')
+})
