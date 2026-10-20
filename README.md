@@ -17,7 +17,7 @@ Then disable effortless if you have it, and restart.
 
 The band above the prompt is the control: **● Auto** turns routing on or off (or resumes it after you pick a model yourself), the model and effort pickers pin a choice (Auto unpins), **why** shows the last decision with 👍/👎, **cache** shows what a cold cache will cost, and **⚙** opens the settings. The same settings live in `/config`.
 
-`/arne` covers the same ground from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `handoff`, `subagents on|off`, `why`, `log`, `stats`, `backend haiku|heuristic|laya|jev`, `settings`. A pin belongs to its chat: a new chat starts on Auto.
+`/arne` covers the same ground from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `handoff`, `subagents auto|haiku|sonnet|opus|off`, `why`, `log`, `stats`, `backend haiku|heuristic|laya|jev`, `settings`. A pin belongs to its chat: a new chat starts on Auto.
 
 **Jev** is TypeSafe's hosted judge, off by default. Pick it and your prompts and the task card leave this machine. Set the key in /config (arne → TypeSafe API key, kept in secure storage, never in settings.json) or `TYPESAFE_API_KEY`, which wins when both are set; make one at console.typesafe.ai/keys. Without a key, Settings says so and Haiku judges. Stats counts Jev's calls in tokens, since its prices aren't published.
 
@@ -25,7 +25,7 @@ The band above the prompt is the control: **● Auto** turns routing on or off (
 
 **Handoff** (the band's panel, the cold and heavy alerts, or `/arne handoff [haiku|sonnet|opus]`) has Haiku summarize the chat into `arne-handoff.md` and the clipboard, runs `/clear`, moves to the tier you picked and sends the summary as the new chat's first message. The old chat stays in history; plugins can't archive a chat, so archiving it from the sidebar is your click. When a cheaper model fits but switching on a warm cache costs more than it saves, the panel prices staying, switching and a handoff side by side.
 
-**Subagents** get their model when they start, at medium effort or more, never dearer than the chat that sent them or the **Subagents** ceiling in Settings (`Off · Haiku · Sonnet · Opus`, default Sonnet; also `/arne subagents off|haiku|sonnet|opus`). A model the call asked for ("use haiku to write this") runs as asked when it is at or under the ceiling; a dearer one runs on the ceiling, and the Agent call says "arne: Sonnet (capped from Opus)". Forks, teammates and workflow agents are left alone, and Off leaves every subagent alone. When arne moves one, it says so on the Agent call, and the band's panel counts this chat's subagents.
+**Subagents** get their model when they start, at medium effort or more, never dearer than the chat that sent them or the **Subagents** ceiling in Settings (`Auto · Haiku · Sonnet · Opus · Off`, default Auto, which is no ceiling; also `/arne subagents auto|haiku|sonnet|opus|off`). A model the call asked for ("use haiku to write this") runs as asked when it is at or under the ceiling; a dearer one runs on the ceiling, and the Agent call says "arne: Sonnet (capped from Opus)". Forks, teammates and workflow agents are left alone, and Off leaves every subagent alone. When arne moves one, it says so on the Agent call, and the band's panel counts this chat's subagents.
 
 **Plugins can't move the app's model menu.** arne switches with the real `/model`, but the desktop app's model menu keeps showing your last pick there; the band says so when they differ.
 

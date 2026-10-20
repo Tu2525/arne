@@ -737,11 +737,12 @@ test('a long brief is no Opus subagent; a moved one is said on its call; Subagen
   const n = got.length
   await spawn('t4')
   expect(got[n]).toEqual({ tool_use_id: 't4', prompt: 'Design the plan: '.padEnd(5000, 'x'), description: 'a task', subagentType: 'general-purpose', parentModel: 'claude-sonnet-5-5', background: false, fork: false })
-  expect((await $.command.run({ command: 'arne', args: 'subagents on' })).text).toBe('arne routes subagents, Sonnet at most.')
+  expect((await $.command.run({ command: 'arne', args: 'subagents on' })).text).toBe("arne picks each subagent's model, no ceiling.")
 })
 
 test('the Subagents ceiling caps a named model and the judge, under any parent or pin; Opus lets Opus through; Off, a fork and a cheaper named model are untouched (17y)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
+  await $.config.set({ key: 'arne.subagents', value: 'sonnet' })
   on('model.complete', () => ({ value: { text: '{"tier":"L","effort":"high","reason":"a design"}', isAnswered: true } }))
   const notices: { tool_use_id: string; text?: string }[] = []
   on('ui.notice', (_$: unknown, e: { tool_use_id: string; text?: string }) => (notices.push(e), { value: undefined }))
@@ -781,10 +782,10 @@ test('the Subagents ceiling caps a named model and the judge, under any parent o
   await spawn('t9')
   expect(got.at(-2).model).toBe('opus')
   expect(got.at(-1).model).toBe(undefined)
-  expect((await $.command.run({ command: 'arne', args: 'subagents max' })).text).toBe('Usage: /arne subagents off|haiku|sonnet|opus')
+  expect((await $.command.run({ command: 'arne', args: 'subagents max' })).text).toBe('Usage: /arne subagents auto|haiku|sonnet|opus|off')
 })
 
-test('the old Subagents On/Off reads as a ceiling: true is Sonnet, false is off (17y)', async ($: any, on: any) => {
+test('the old Subagents On/Off reads as a ceiling: true is Sonnet, false is off; anything else is Auto (17y)', async ($: any, on: any) => {
   engine(on)
   const band = await $.ui.mount(band100)
   await $.command.run({ command: 'arne', args: 'settings' })

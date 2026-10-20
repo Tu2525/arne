@@ -283,10 +283,10 @@ const DEFAULTS: Live = {
   coldTokens: 30_000,
   heavyTokens: 150_000,
   continueAfterCompact: true,
-  subagents: 'sonnet',
+  subagents: 'auto',
 }
-// 17y: Subagents was On/Off before it became a ceiling; On reads as Sonnet, Off as off.
-const subCeiling = (v: unknown) => (v === false || v === 'off' ? 'off' : TIER_OF[String(v)] ? String(v) : 'sonnet')
+// 17y: Subagents was On/Off before it became a ceiling; On reads as Sonnet, Off as off. Auto is no ceiling (Opus).
+const subCeiling = (v: unknown) => (v === false || v === 'off' ? 'off' : v === 'auto' || TIER_OF[String(v)] ? String(v) : v === true ? 'sonnet' : 'auto')
 let live: Live = { ...DEFAULTS }
 const FIELDS = Object.keys(DEFAULTS) as (keyof Live)[]
 
@@ -753,10 +753,11 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
             { value: 'jev', label: 'Jev' },
           ]),
           choice('Subagents', 'subagents', [
-            { value: 'off', label: 'Off' },
+            { value: 'auto', label: 'Auto' },
             { value: 'haiku', label: 'Haiku' },
             { value: 'sonnet', label: 'Sonnet' },
             { value: 'opus', label: 'Opus' },
+            { value: 'off', label: 'Off' },
           ]),
         ], needsKey && (
           // No masked Input exists, so the key is never typed here: the button points to /config's secure field.
@@ -1096,11 +1097,11 @@ export const register: Register = (on, options) => {
       }
       case 'subagents': {
         // `on` was the old switch: it reads as the default ceiling.
-        const v = rest[0] === 'on' ? 'sonnet' : rest[0]
-        if (v !== 'off' && !TIER_OF[v ?? '']) return { text: 'Usage: /arne subagents off|haiku|sonnet|opus' }
+        const v = rest[0] === 'on' ? 'auto' : rest[0]
+        if (v !== 'off' && v !== 'auto' && !TIER_OF[v ?? '']) return { text: 'Usage: /arne subagents auto|haiku|sonnet|opus|off' }
         await setOption($, 'subagents', v)
         return {
-          text: live.subagents === 'off' ? 'arne leaves subagents on the model they ask for.' : `arne routes subagents, ${shortModel(MODEL[TIER_OF[live.subagents] ?? 'M'])} at most.`,
+          text: live.subagents === 'off' ? 'arne leaves subagents on the model they ask for.' : live.subagents === 'auto' ? "arne picks each subagent's model, no ceiling." : `arne routes subagents, ${shortModel(MODEL[TIER_OF[live.subagents] ?? 'M'])} at most.`,
         }
       }
       case 'handoff': {
@@ -1155,7 +1156,7 @@ export const register: Register = (on, options) => {
     const s = await settings($)
     if (live.subagents === 'off' || !s.enabled || e.fork || e.isTeammate || e.workflow || e.resume) return next(e)
     const now: number = await $.clock.now()
-    const ceiling: Tier = TIER_OF[live.subagents] ?? 'M'
+    const ceiling: Tier = TIER_OF[live.subagents] ?? 'L'
     const asked = e.model ? tierOf(e.model) : undefined
     // A model the call named runs as asked unless it is dearer than the ceiling: then the ceiling, at medium.
     if (asked && PRICE[asked] > PRICE[ceiling]) {
