@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { layaVerdict, parseVerdict } from './backends'
+import { parseVerdict, systemOneVerdict } from './backends'
 
 import { route, MODEL } from './route'
 import type { Backend, Decision } from './route'
@@ -76,7 +76,22 @@ test('verdict parsing rejects junk', async () => {
 })
 
 test('laya answers map to a verdict, abstention falls through', async () => {
-  expect(layaVerdict({ tier: { choice: 'L' }, effort: { score: 2 } })?.effort).toBe('high')
-  expect(layaVerdict({ tier: { choice: 'S', abstention: true }, effort: { score: 0 } })).toBe(undefined)
-  expect(layaVerdict(undefined)).toBe(undefined)
+  expect(systemOneVerdict({ tier: { choice: 'L' }, effort: { score: 2 } })?.effort).toBe('high')
+  expect(systemOneVerdict({ tier: { choice: 'S', abstention: true }, effort: { score: 0 } })).toBe(undefined)
+  expect(systemOneVerdict(undefined)).toBe(undefined)
+})
+
+// The docs' sample (17s): a score is an expectation, 0.67 between two levels, so the level is the argmax.
+const SAMPLE = {
+  tier: { type: 'choice', choice: 'M', confidence: 0.8, probabilities: { S: 0.1, M: 0.7, L: 0.2 } },
+  effort: { type: 'score', score: 0.67, confidence: 0.67, probabilities: { '0': 0.33, '1': 0.67, '2': 0 } },
+}
+
+test('the sample System One response gives tier and effort through argmax (17s)', async () => {
+  expect(systemOneVerdict(SAMPLE, 'jev')).toEqual({ tier: 'M', effort: 'medium', reason: 'jev' })
+})
+
+test('a System One answer under 0.5 confidence falls through (17s)', async () => {
+  expect(systemOneVerdict({ ...SAMPLE, tier: { ...SAMPLE.tier, confidence: 0.4 } })).toBe(undefined)
+  expect(systemOneVerdict({ ...SAMPLE, effort: { ...SAMPLE.effort, confidence: 0.49 } })).toBe(undefined)
 })

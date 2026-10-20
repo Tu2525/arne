@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
+import { JEV_MODEL, JEV_URL, LAYA_URL, parseVerdict, SYSTEM, SYSTEM_ONE_TIMEOUT_MS, systemOneBody, systemOneVerdict } from './backends'
 import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, overTurns, paysOffAfter, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, OUT, READ } from './econ'
 import type { BandState, Row as CostRow } from './econ'
 import { MODEL, route } from './route'
@@ -50,6 +50,8 @@ const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
 const thanked = atom({ plugin: 'arne', key: 'thanked' } as const, null as string | null)
 // True while Laya is the judge but laya-serve is not answering; the why line then says Haiku judged.
 const layaDown = atom({ plugin: 'arne', key: 'layaDown' } as const, false)
+// True while Jev is the judge but TYPESAFE_API_KEY is not set (17s); the why line then says Haiku judged.
+const jevNoKey = atom({ plugin: 'arne', key: 'jevNoKey' } as const, false)
 // What the desktop app's model picker shows: the session's first model, then each pick made in it
 // (PostModelSwitch source "sdk"). Plugins cannot move that picker, so arne's /model can differ from it.
 const appPicker = atom({ plugin: 'arne', key: 'appPicker' } as const, null)
@@ -534,18 +536,33 @@ function backendsOf($: any, backend: string, card = ''): Backend[] {
       return r.isAnswered ? parseVerdict(r.text) : undefined
     },
   }
+  // System One (17s): laya-serve and Jev take the same request with the task card in its state.
+  // No answer within 1.5 s falls through to Haiku.
+  const systemOne = async (url: string, headers: Record<string, string>, text: string, model?: string) => {
+    const r = await Promise.race([
+      $.http.fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: systemOneBody(text, card, model) }),
+      $.clock.sleep(SYSTEM_ONE_TIMEOUT_MS).then(() => undefined),
+    ])
+    return r?.ok ? JSON.parse(r.text) : undefined
+  }
   const laya: Backend = {
     name: 'laya',
+    ask: async text => systemOneVerdict((await systemOne(`${LAYA_URL}/v1/systemone`, {}, text))?.answers, 'laya'),
+  }
+  const jev: Backend = {
+    name: 'jev',
     ask: async text => {
-      const r = await $.http.fetch(`${LAYA_URL}/v1/systemone`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: layaBody(text),
-      })
-      return r.ok ? layaVerdict(JSON.parse(r.text).answers) : undefined
+      // From the environment only: never stored, logged or shown. No key, no request.
+      const key = await $.env.get('TYPESAFE_API_KEY')
+      if (!key) return undefined
+      const j = await systemOne(JEV_URL, { authorization: `Bearer ${key}` }, text, JEV_MODEL)
+      // Jev's prices are not published, so Stats counts its tokens on a row of their own.
+      const u = j?.usage
+      if (u) await appendLog($, { type: 'usage', at: await $.clock.now(), kind: 'jev', model: JEV_MODEL, input: u.input_tokens ?? 0, read: 0, write: 0, out: u.output_tokens ?? 0 })
+      return systemOneVerdict(j?.answers, 'jev')
     },
   }
-  return backend === 'laya' ? [laya, haiku] : backend === 'haiku' ? [haiku] : []
+  return backend === 'laya' ? [laya, haiku] : backend === 'jev' ? [jev, haiku] : backend === 'haiku' ? [haiku] : []
 }
 
 // The main loop's decision for one prompt, inside the floor and ceiling (pins included).
@@ -558,6 +575,8 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
   }
   // The band says so when Laya was picked but is not answering: the chain judges with Haiku instead.
   await update($, layaDown, () => s.backend === 'laya' && !layaUp)
+  const jevKeyless = s.backend === 'jev' && !(await $.env.get('TYPESAFE_API_KEY'))
+  await update($, jevNoKey, () => jevKeyless)
   // Any pin pins both parts and skips routing (17p): the part it leaves out stays what the session has now.
   // A pin is the person's own pick, so it skips the floor and ceiling (how xhigh, max or a capped tier are reached).
   const pin = s.pin ?? undefined
@@ -727,7 +746,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean) {
           ]),
           choice('Subagents', 'subagents', [{ value: true, label: 'On' }, { value: false, label: 'Off' }]),
         ],
-        'Laya is a judge that runs on this machine. Your Good call and Wrong call ratings train it.',
+        'Laya is a judge that runs on this machine. Your Good call and Wrong call ratings train it. Jev is TypeSafe’s hosted judge: your prompts leave this machine, and it needs TYPESAFE_API_KEY.',
       )}
       {card('Limits', [
         choice('Cheapest model', 'modelFloor', MODELS),
@@ -807,8 +826,8 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
                   <Box flexGrow={1}>
                     <Text>{l.label}</Text>
                   </Box>
-                  <Text dimColor tabular>{l.label === 'Switches and summaries' ? String(l.count) : `${l.count} turn${l.count === 1 ? '' : 's'}`}</Text>
-                  <Text tabular>{usd(l.cost)}</Text>
+                  <Text dimColor tabular>{l.label === 'Switches and summaries' ? String(l.count) : `${l.count} ${l.tokens === undefined ? 'turn' : 'call'}${l.count === 1 ? '' : 's'}`}</Text>
+                  <Text tabular>{l.tokens === undefined ? usd(l.cost) : `${l.tokens.toLocaleString('en-US')} tokens`}</Text>
                 </Box>
               ))}
             </Box>
@@ -1019,12 +1038,17 @@ export const register: Register = (on, options) => {
         return { text: 'arne unpinned.' }
       case 'backend': {
         const b = rest[0]
-        if (b !== 'haiku' && b !== 'heuristic' && b !== 'laya') return { text: 'Backends: haiku, heuristic, laya.' }
+        if (b !== 'haiku' && b !== 'heuristic' && b !== 'laya' && b !== 'jev') return { text: 'Backends: haiku, heuristic, laya, jev.' }
         await setOption($, 'backend', b)
         if (live.backend !== b) return { text: `arne backend stays ${live.backend}: the setting was refused.` }
         if (b === 'laya') {
           return {
             text: 'arne backend: laya. It needs laya-serve on PATH (Python 3.10+, the laya package, torch; git clone https://github.com/NandhaKishorM/laya and pip install -e .). Until it answers, turns fall back to haiku.',
+          }
+        }
+        if (b === 'jev') {
+          return {
+            text: 'arne backend: jev. Jev is TypeSafe’s hosted judge: your prompts and the task card leave this machine. It needs TYPESAFE_API_KEY in the environment (keys at console.typesafe.ai/keys); until then, turns fall back to haiku.',
           }
         }
         return { text: `arne backend: ${b}.` }
@@ -1248,6 +1272,7 @@ export const register: Register = (on, options) => {
     const pinned = Boolean(pin?.tier || pin?.effort)
     const thankedKey = await read($, thanked)
     const judgeDown = await read($, layaDown)
+    const jevKeyless = await read($, jevNoKey)
     const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
     const usd = (u: number) => (dollars(u) < 0.01 ? 'under $0.01' : `$${dollars(u).toFixed(2)}`)
     const chatK = c ? `${Math.round(c.C / 1000)}k` : ''
@@ -1381,7 +1406,9 @@ export const register: Register = (on, options) => {
     const subN = (['S', 'M', 'L', 'kept', 'asked'] as const).reduce((n, k) => n + (subs[k] ?? 0), 0)
     const why = judgeDown
       ? 'Laya is not answering, so Haiku judged.'
-      : !l
+      : jevKeyless
+        ? 'Jev needs TYPESAFE_API_KEY, Haiku judged.'
+        : !l
         ? 'No decision yet.'
         : pinned
           ? 'Pinned: arne keeps your pick until you choose Auto.'

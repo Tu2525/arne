@@ -22,14 +22,20 @@ export function parseVerdict(text: string): Verdict | undefined {
   }
 }
 
+// System One (17s): laya-serve here and Jev at TypeSafe speak the same POST /v1/systemone.
 export const LAYA_URL = 'http://127.0.0.1:8000'
+export const JEV_URL = 'https://api.typesafe.ai/v1/systemone'
+export const JEV_MODEL = 'jev-latest'
+export const SYSTEM_ONE_TIMEOUT_MS = 1500
+// Below this an answer falls through to the next judge. ponytail: untuned; step 8 measures it.
+export const MIN_CONFIDENCE = 0.5
 
-// Request body for laya-serve POST /v1/systemone: two typed questions in one call.
-// min_confidence is untuned; step 8 measures it.
-export function layaBody(text: string): string {
+// Request body: two typed questions in one call, read against the task card and the prompt.
+export function systemOneBody(text: string, task = '', model?: string): string {
   return JSON.stringify({
-    state: { prompt: text.slice(0, 4000) },
-    min_confidence: 0.5,
+    state: { ...(task ? { task } : {}), prompt: text.slice(0, 4000) },
+    ...(model ? { model } : {}),
+    min_confidence: MIN_CONFIDENCE,
     questions: {
       tier: {
         type: 'choice',
@@ -49,14 +55,26 @@ export function layaBody(text: string): string {
   })
 }
 
-// Pure: laya's answers to a verdict. An abstained or missing answer is undefined,
-// so the chain falls through to the next backend.
-export function layaVerdict(answers: any): Verdict | undefined {
+// The most likely key of an answer's probabilities: an option name for a choice, a level index for a score.
+function argmax(p: unknown): string | undefined {
+  if (!p || typeof p !== 'object') return undefined
+  let best: [string, number] | undefined
+  for (const [k, v] of Object.entries(p)) if (typeof v === 'number' && (!best || v > best[1])) best = [k, v]
+  return best?.[0]
+}
+
+// Pure: System One's answers to a verdict, by argmax over each answer's probabilities. A score is an
+// expectation (0.67 between two levels), never an index. An abstained, unsure or missing answer is
+// undefined, so the chain falls through to the next judge.
+export function systemOneVerdict(answers: any, reason = 'system one'): Verdict | undefined {
   const t = answers?.tier
   const e = answers?.effort
   if (!t || !e || t.abstention || e.abstention) return undefined
-  const tier = t.choice
-  const effort = typeof e.score === 'number' ? EFFORTS[e.score] : e.score
-  if (!TIERS.includes(tier) || !EFFORTS.includes(effort)) return undefined
-  return { tier, effort, reason: 'laya' }
+  if ((typeof t.confidence === 'number' && t.confidence < MIN_CONFIDENCE) || (typeof e.confidence === 'number' && e.confidence < MIN_CONFIDENCE)) return undefined
+  const tier = argmax(t.probabilities) ?? t.choice
+  const level = argmax(e.probabilities)
+  // No probabilities (an older laya-serve): a whole-number score is still a level.
+  const effort = level !== undefined ? EFFORTS[Number(level)] : Number.isInteger(e.score) ? EFFORTS[e.score] : undefined
+  if (!TIERS.includes(tier) || !effort) return undefined
+  return { tier, effort, reason }
 }

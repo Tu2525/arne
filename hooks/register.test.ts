@@ -551,6 +551,29 @@ test('/arne backend sets the backend that routing reads (17u)', async ($: any, o
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend heuristic')
 })
 
+test('/arne backend jev sets the backend and says prompts leave the machine (17s)', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  expect((await $.command.run({ command: 'arne', args: 'backend jev' })).text).toContain('leave this machine')
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend jev')
+})
+
+test('Jev with no TYPESAFE_API_KEY makes no request: Haiku judges, and the why line says so (17s)', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
+  let fetched = 0
+  on('http.fetch', () => (fetched++, { value: { status: 200, ok: true, headers: {}, text: '{}' } }))
+  let judged = 0
+  on('model.complete', () => (judged++, { value: { text: '{"tier":"M","effort":"medium","reason":"x"}', isAnswered: true } }))
+  await $.command.run({ command: 'arne', args: 'backend jev' })
+  await $.prompt.submit(typed('tidy up the helpers in this module'))
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(fetched).toBe(0)
+  expect(judged).toBe(1)
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 30 } })
+  await $.ui.press({ plugin: 'arne', key: 'band' })
+  expect(await pane.find({ type: 'Text', text: /Jev needs TYPESAFE_API_KEY, Haiku judged/ })).toBeDefined()
+})
+
 test('the first prompt after a compact is sent, not held, even past the TTL (17v)', async ($: any, on: any) => {
   const { s, clock } = engine(on, 'claude-sonnet-5-5')
   await coldHeavy($, s, clock)

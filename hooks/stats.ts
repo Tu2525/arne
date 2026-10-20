@@ -7,7 +7,7 @@ import type { Tier } from './route'
 export type UsageRow = {
   type: 'usage'
   at: number
-  kind: 'turn' | 'agent' | 'summary'
+  kind: 'turn' | 'agent' | 'summary' | 'jev' // jev: one Jev judge call, its tokens only (17s)
   model: string
   input: number
   read: number
@@ -56,12 +56,15 @@ export function usageRow(
 export const priceOn = (r: UsageRow, t: Tier, asRead = false) =>
   dollars(PRICE[t] * (r.input + r.read * READ + r.write * (asRead ? READ : WRITE) + r.out * OUT))
 
-export type Line = { label: string; count: number; cost: number }
+export type Line = { label: string; count: number; cost: number; tokens?: number } // tokens: a line with no known price (Jev)
 export type Summary = { spent: number; sonnet: number; opus: number; lines: Line[]; turns: number }
 
 /** Totals for the rows at or after `since`. Rows without usage never get here (usageRow drops them). */
 export function summarize(rows: UsageRow[], since: number): Summary {
   const picked = rows.filter(r => r.at >= since && tierOf(r.model))
+  // Jev's prices are not published (17s): its calls count in tokens, on their own line, outside the dollars.
+  const jevRows = rows.filter(r => r.at >= since && r.kind === 'jev')
+  const jev: Line = { label: 'Jev judge', count: jevRows.length, cost: 0, tokens: jevRows.reduce((n, r) => n + r.input + r.out, 0) }
   const tiers: [Tier, string][] = [['S', 'Haiku'], ['M', 'Sonnet'], ['L', 'Opus']]
   const byTier = new Map<Tier, Line>(tiers.map(([t, label]) => [t, { label, count: 0, cost: 0 }]))
   const agents: Line = { label: 'Subagents', count: 0, cost: 0 }
@@ -91,7 +94,7 @@ export function summarize(rows: UsageRow[], since: number): Summary {
     line.count++
     line.cost += cost - switchCost
   }
-  const lines = [...byTier.values(), agents, extra].filter(l => l.count > 0)
+  const lines = [...byTier.values(), agents, extra, jev].filter(l => l.count > 0)
   return { spent, sonnet, opus, lines, turns: picked.filter(r => r.kind !== 'summary').length }
 }
 
