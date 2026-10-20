@@ -711,7 +711,7 @@ function settingsView($: any, { Box, Button, Text }: any, narrow: boolean, gui: 
             { value: 'haiku', label: 'Haiku' },
             { value: 'laya', label: 'Laya' },
           ])}
-          {choice('Subagents', 'subagents', [{ value: true, label: 'Route' }, { value: false, label: 'Leave' }])}
+          {choice('Subagents', 'subagents', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
         </Box>
         {live.backend === 'laya' && <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>}
       </Box>
@@ -1567,15 +1567,16 @@ export const register: Register = (on, options) => {
                   {costs.length > 0 && (
                     <Box flexDirection="column">
                       {costs.map(r => (
-                        <Box key={`cost-${r.key}`} flexDirection="row" alignItems="center" columnGap={2}>
-                          {/* The handoff row's label is its button, so the button never sits on a line of its own (3). */}
-                          {r.tier && !busy ? (
-                            <Button key="handoff-row" plain label={r.label} onPress={(p: any) => handoff($, r.tier!, p?.surface)} />
-                          ) : (
+                        // One line: the label and its money on the left (the money wraps under the label when
+                        // there is no room), "· best" and the handoff button on the right, never wrapped.
+                        <Box key={`cost-${r.key}`} flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2}>
+                          <Box key={`cost-${r.key}-text`} flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={1} minWidth={0}>
                             <Text>{r.label}</Text>
-                          )}
-                          <Box flexShrink={1}>
-                            <Text color="subtle">{`${r.money}${r.best ? ' · best' : ''}`}</Text>
+                            <Text color="subtle">{r.money}</Text>
+                          </Box>
+                          <Box key={`cost-${r.key}-end`} flexDirection="row" alignItems="center" columnGap={2} flexShrink={0}>
+                            {r.best && <Text color="subtle">· best</Text>}
+                            {r.tier && (busy ?? <Button key="handoff-row" plain label="Handoff" onPress={(p: any) => handoff($, r.tier!, p?.surface)} />)}
                           </Box>
                         </Box>
                       ))}
@@ -1605,7 +1606,6 @@ export const register: Register = (on, options) => {
                           <Button key={`handoff-${TIER_NAME_OF[t]}`} plain label={`to ${name(t)}`} onPress={(p: any) => handoff($, t, p?.surface)} />
                         ))}
                     </Box>
-                    {!narrow && <Text color="subtle">Esc to close</Text>}
                   </Box>
                 </Box>
               )}

@@ -256,13 +256,11 @@ test('the band takes its width from bodyColumns: one resting row, short effort l
   await $.ui.press({ plugin: 'arne', key: 'band' })
   for (let i = 0; i < 2; i++) await clock.settle()
   expect(await wide.find({ type: 'Button', text: 'Extra high' })).toBeDefined()
-  expect(await wide.find({ type: 'Text', text: 'Esc to close' })).toBeDefined()
 
   // The panel stays open (its state is arne's), so the narrow mount shows it in the short forms.
   const narrow = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 50 }, viewport: { columns: 50, rows: 24 } })
   expect(await narrow.find({ type: 'Button', text: 'XHi' })).toBeDefined()
   expect(await narrow.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
-  expect(await narrow.find({ type: 'Text', text: 'Esc to close' })).toBeUndefined()
   // The resting line keeps the model at 50 columns: the reason and cache shorten, the head stays.
   expect(await narrow.find({ type: 'Text', text: /Sonnet/ })).toBeDefined()
 })
@@ -697,9 +695,9 @@ test('the costs table holds the one Handoff, best on its row; the Laya line show
   await stickyOpus($, on)
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 120 }, viewport: { columns: 120, rows: 40 } })
   await band.press({ key: 'band' })
-  expect(await band.find({ type: 'Button', text: 'Handoff to Sonnet' })).toBeDefined()
+  expect(await band.find({ type: 'Button', text: 'Handoff' })).toBeDefined()
   expect(await band.find({ type: 'Button', text: 'Handoff…' }).catch(() => undefined)).toBeUndefined()
-  expect(await band.find({ type: 'Text', text: /\d a turn.* · best$/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '· best' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /^Ratings train Laya/ })).toBeDefined()
   await band.press({ key: 'band' })
   await band.press({ key: 'band' })
@@ -767,4 +765,35 @@ test('Settings, then Stats, then Back twice is the main panel; closing the panel
   expect(await at('Model')).toBe(false)
   await $.command.run({ command: 'arne', args: 'settings' })
   expect(await at('Routing')).toBe(true)
+})
+
+test('a cost row is one line: label and money wrap together on the left, best and the button stay on the right (costs fix 1)', async ($: any, on: any) => {
+  await stickyOpus($, on)
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 40 } })
+  await band.press({ key: 'band' })
+  for (const k of ['stay', 'switch', 'handoff']) {
+    const row = await band.find({ key: `cost-${k}` })
+    expect(row.props.flexWrap).toBeUndefined()
+    expect(row.children.map((c: any) => c.props?.key)).toEqual([`cost-${k}-text`, `cost-${k}-end`])
+    const left = await band.find({ key: `cost-${k}-text` })
+    expect(left.props.flexWrap).toBe('wrap')
+    expect(left.children.map((c: any) => c.type)).toEqual(['Text', 'Text'])
+    expect((await band.find({ key: `cost-${k}-end` })).props.flexShrink).toBe(0)
+  }
+  // The handoff row's end holds its button; "· best" sits beside it on whichever row is cheapest.
+  const end = await band.find({ key: 'cost-handoff-end' })
+  expect(end.children.at(-1).props.label).toBe('Handoff')
+  expect(await band.find({ type: 'Text', text: '· best' })).toBeDefined()
+})
+
+test('Subagents reads On/Off in Settings as in the panel; no Esc hint, since no key closes the band (fixes 2, 3)', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  const band = await $.ui.mount(band100)
+  await band.press({ key: 'band' })
+  expect(await band.find({ type: 'Text', text: /Esc/ }).catch(() => undefined)).toBeUndefined()
+  expect((await band.find({ key: 'subs-on' })).props.label).toBe('On')
+  await band.press({ key: 'gear' })
+  expect((await band.find({ key: 'subagents-true' })).props.label).toBe('On')
+  expect((await band.find({ key: 'subagents-false' })).props.label).toBe('Off')
+  expect(await band.find({ type: 'Button', text: 'Route' }).catch(() => undefined)).toBeUndefined()
 })
