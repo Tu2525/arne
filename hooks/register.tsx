@@ -344,10 +344,14 @@ async function ownSet($: any, key: string, value: unknown): Promise<{ value: unk
   const r = await setOnce($, key, value)
   if (!('deny' in r) || !r.deny.includes('no /config row')) return r
   const field = key.slice(key.indexOf('.') + 1)
-  const rows: { key: string; provider?: { plugin?: string } }[] = await $.config.list().catch(() => [])
-  const mine = rows.filter(row => row.key.endsWith(`.${field}`) && (row.provider?.plugin ?? row.key).startsWith('arne'))
+  const rows: { key: string; provider?: unknown }[] = await $.config.list().catch(() => [])
+  const named = rows.filter(row => row.key.endsWith(`.${field}`) || row.key === field)
+  // The provider's shape isn't documented: any arne in the key or the provider object marks arne's row.
+  const mine = named.filter(row => JSON.stringify([row.key, row.provider ?? null]).includes('arne'))
   if (mine.length > 1) return { deny: 'two copies of arne are enabled; turn one off in /plugin' }
-  return mine.length && mine[0]!.key !== key ? setOnce($, mine[0]!.key, value) : r
+  if (mine.length) return mine[0]!.key !== key ? setOnce($, mine[0]!.key, value) : r
+  // Name the rows it saw, so a toast says what the engine calls this option.
+  return { deny: `${r.deny.replace(/\)$/, '')}; rows ending .${field}: ${named.map(row => row.key).join(', ') || 'none'})` }
 }
 
 // Puts one option into `live` and onto every surface: the band (isOff), the Settings pane (liveRev), the status line.

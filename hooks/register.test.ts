@@ -800,9 +800,14 @@ test('two arne plugins enabled: a write finds the row arne owns; two rows of its
   s.rowPrefix = 'arne@x'
   await $.command.run({ command: 'arne', args: 'subagents on' })
   expect(s.writes.at(-1)).toBe('arne@x.subagents')
+  s.rows = [{ key: 'plugin.subagents', provider: { name: 'arne@x' } }]
+  s.rowPrefix = 'plugin'
+  await $.command.run({ command: 'arne', args: 'subagents on' })
+  expect(s.writes.at(-1)).toBe('plugin.subagents') // the provider's shape is not documented: any arne in it counts
+  s.rowPrefix = 'arne@x'
   s.rows = []
   await $.command.run({ command: 'arne', args: 'subagents on' })
-  expect(s.toasts.at(-1)).toBe('Could not change subagents: no /config row with key arne.subagents ($.config.list names them)')
+  expect(s.toasts.at(-1)).toBe('Could not change subagents: no /config row with key arne.subagents ($.config.list names them; rows ending .subagents: none)')
   s.rowPrefix = undefined
   await $.command.run({ command: 'arne', args: 'subagents on' })
 })
