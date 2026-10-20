@@ -581,3 +581,65 @@ test('a session start clears a busy flag a reload left behind: the cold alert ha
   await band.press({ key: 'compact' })
   expect(s.ran.filter(r => r.startsWith('/compact')).length).toBe(2)
 })
+
+test('a subagent gets its model at spawn: never dearer than the chat, effort at least medium; a named model or a fork is left alone (17x)', async ($: any, on: any) => {
+  const { s } = engine(on)
+  let judged = 0
+  on('model.complete', () => (judged++, { value: { text: '{"tier":"M","effort":"low","reason":"a search"}', isAnswered: true } }))
+  const spawned: (string | undefined)[] = []
+  on('agent.spawn', (_$: unknown, e: { model?: string; parentModel: string; tool_use_id: string }) => {
+    spawned.push(e.model)
+    return { model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }
+  })
+  const spawn = (id: string, extra: object = {}) =>
+    $.agent.spawn({ tool_use_id: id, prompt: 'look through the hooks and list every atom', description: 'list atoms', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra })
+
+  expect((await spawn('t1')).model).toBe('claude-sonnet-5-5')
+  // Its steps keep that model and get the spawn's effort, raised to medium.
+  for await (const _ of $.turn.step({ turnId: 'p1', agentId: 'a-t1', index: 0, model: 'claude-sonnet-5-5', effort: 'high', messageCount: 1 })) {
+    // drain
+  }
+  expect(s.sent).toEqual(['claude-sonnet-5-5'])
+  expect(s.efforts).toEqual(['medium'])
+
+  // A Haiku chat never sends a Sonnet subagent.
+  expect((await spawn('t2', { parentModel: 'claude-haiku-5-5' })).model).toBe('claude-haiku-5-5')
+
+  const before = judged
+  expect((await spawn('t3', { model: 'opus' })).model).toBe('opus')
+  expect((await spawn('t4', { fork: true })).model).toBe('claude-opus-5-5')
+  expect(judged).toBe(before)
+  expect(spawned.slice(2)).toEqual(['opus', undefined])
+})
+
+test('a long brief is no Opus subagent; a moved one is said on its call; Subagents off and an asked model pass through; the panel counts and toggles them (17x)', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
+  const notices: { tool_use_id: string; text?: string }[] = []
+  on('ui.notice', (_$: unknown, e: { tool_use_id: string; text?: string }) => (notices.push(e), { value: undefined }))
+  const got: any[] = []
+  on('agent.spawn', (_$: unknown, e: any) => (got.push(e), { model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }))
+  const spawn = (id: string, extra: object = {}) =>
+    $.agent.spawn({ tool_use_id: id, prompt: 'Design the plan: '.padEnd(5000, 'x'), description: 'a task', subagentType: 'general-purpose', parentModel: 'claude-sonnet-5-5', background: false, fork: false, ...extra })
+
+  // 5000 chars with "design" and "plan" in it: once fast: hard, Opus. Now the judge's pick, said on the call.
+  expect((await spawn('t1')).model).toBe('claude-haiku-5-5')
+  expect(notices).toEqual([{ tool_use_id: 't1', text: expect.stringContaining('arne: Haiku') }])
+  // The Plan prior is Opus, but a Sonnet chat never sends one dearer than itself.
+  expect((await spawn('t2', { subagentType: 'Plan' })).model).toBe('claude-sonnet-5-5')
+  expect((await spawn('t3', { model: 'haiku' })).model).toBe('haiku')
+  expect(notices.length).toBe(1)
+
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
+  await $.ui.press({ plugin: 'arne', key: 'band' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'Subagents: 2 routed this chat (1 to Haiku, 1 kept, 1 as asked)' })).toBeDefined()
+
+  await $.ui.press({ plugin: 'arne', key: 'subs' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'Subagents: left on the model they ask for' })).toBeDefined()
+  const n = got.length
+  await spawn('t4')
+  expect(got[n]).toEqual({ tool_use_id: 't4', prompt: 'Design the plan: '.padEnd(5000, 'x'), description: 'a task', subagentType: 'general-purpose', parentModel: 'claude-sonnet-5-5', background: false, fork: false })
+  expect((await $.command.run({ command: 'arne', args: 'subagents on' })).text).toBe('arne routes subagents.')
+})

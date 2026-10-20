@@ -76,6 +76,10 @@ const compactSendingAtom = atom({ plugin: 'arne', key: 'compactSending' } as con
 // The tier the last handoff went to, for the panel's note; the "Handoff…" item's tier list is open (17w).
 const handedOff = atom({ plugin: 'arne', key: 'handedOff' } as const, null)
 const handoffMenu = atom({ plugin: 'arne', key: 'handoffMenu' } as const, false)
+// This chat's subagents (17x): how many arne moved to each tier, kept on their model, or ran as asked.
+const subCount = atom({ plugin: 'arne', key: 'subCount' } as const, null)
+type SubCount = Partial<Record<Tier | 'kept' | 'asked', number>>
+const countSpawn = ($: any, k: keyof SubCount) => update($, subCount, (c: SubCount | null) => ({ ...c, [k]: ((c ?? {})[k] ?? 0) + 1 }))
 // The Stats pane's three periods, parsed from the log once per open rather than on every press.
 const statsData = atom({ plugin: 'arne', key: 'stats' } as const, null)
 const TIER_NAME_OF: Record<Tier, string> = { S: 'haiku', M: 'sonnet', L: 'opus' }
@@ -152,6 +156,7 @@ ${r.text}
     step = '/clear'
     await $.command.run({ command: 'clear', args: '' })
     await update($, cache, () => null) // the new chat has no cache yet
+    await update($, subCount, () => null)
     step = '/model'
     // Pinned after the clear: a pin belongs to the chat it was set in.
     await setPinPart($, { tier }, false)
@@ -221,8 +226,19 @@ let lastResponseAt: number | undefined
 let arneSwitched = false // arne's own /model ran: the next main turn's cache writes are the switch's (17q)
 // Decisions made at prompt.submit, by text, for the turn.start of the same prompt.
 const planned = new Map<string, Decision>()
-// Subagent decisions, by agentId, so each step of a run uses its turn's choice.
+// Subagent decisions, by agentId, so each step of a run uses the effort picked at its spawn (17x).
 const agents = new Map<string, Decision | undefined>()
+// Picks whose spawn has not resolved yet: the subagent's first request can arrive before its agentId does.
+const pendingPicks: Decision[] = []
+// A step of an agent with no pick yet claims the oldest pending pick on its model (effortless's helperEffortOf).
+function agentPick(agentId: string, model: string): Decision | undefined {
+  if (agents.has(agentId)) return agents.get(agentId)
+  const i = pendingPicks.findIndex(d => tierOf(model) === d.tier)
+  if (i < 0) return undefined
+  const [d] = pendingPicks.splice(i, 1)
+  agents.set(agentId, d)
+  return d
+}
 
 // The band's pickers pin a tier, an effort, or both; the part left out is arne's to decide.
 type Pin = { tier?: Tier; effort?: Decision['effort'] }
@@ -608,7 +624,7 @@ async function routeAndSend($: any, text: string) {
 }
 
 // $.fs has no append: read, then write the whole file. ponytail: O(n) per turn, fine below ~10k rows.
-async function appendLog($: any, row: (Row & { text: string; agent?: string; decided?: string }) | UsageRow) {
+async function appendLog($: any, row: (Row & { text: string; agent?: string; decided?: string; from?: string; to?: string; at?: number }) | UsageRow) {
   try {
     const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
     await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify(row) + '\n')
@@ -689,9 +705,10 @@ export const register: Register = (on, options) => {
     await update($, compacting, () => false)
     await update($, compactSendingAtom, () => false)
     await update($, disabling, () => false)
+    await update($, subCount, () => null)
     await $.command.register({
       name: 'arne',
-      description: 'Auto model and effort routing: on, off, pin, unpin, handoff, why, log, stats, backend, debug',
+      description: 'Auto model and effort routing: on, off, pin, unpin, handoff, subagents, why, log, stats, backend, debug',
     })
     const eff = await effortlessOn($)
     await update($, effortless, () => eff)
@@ -850,6 +867,11 @@ export const register: Register = (on, options) => {
         )
         return { text: `arne stats (an estimate: each turn's real tokens, priced again on Opus or Sonnet):\n${lines.join('\n')}` }
       }
+      case 'subagents': {
+        if (rest[0] !== 'on' && rest[0] !== 'off') return { text: 'Usage: /arne subagents on|off' }
+        await setOption($, 'subagents', rest[0] === 'on')
+        return { text: live.subagents ? 'arne routes subagents.' : 'arne leaves subagents on the model they ask for.' }
+      }
       case 'handoff': {
         const named: Tier | undefined = TIER_OF[rest[0] ?? '']
         if (rest[0] && !named) return { text: 'Usage: /arne handoff [haiku|sonnet|opus]' }
@@ -889,11 +911,59 @@ export const register: Register = (on, options) => {
         const mode = await modeOf($)
         const state = mode === 'paused' ? 'paused (you picked a model; /arne on resumes)' : mode
         return {
-          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, pin, unpin, handoff, why, log, stats, backend, debug.`,
+          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, pin, unpin, handoff, subagents, why, log, stats, backend, debug.`,
         }
       }
     }
   })
+
+  // A subagent's model is picked here, before it starts (17x). Left alone: Subagents off, arne off, a pin,
+  // a fork, a teammate, a workflow agent, a resumed run, and a call that named its model (the parent asked).
+  on('agent.spawn', async ($, e, next) => {
+    const s = await settings($)
+    if (!live.subagents || !s.enabled || s.pin || e.fork || e.isTeammate || e.workflow || e.resume) return next(e)
+    const now: number = await $.clock.now()
+    if (e.model) {
+      const r = await next(e)
+      if (r.agentId) agents.set(r.agentId, undefined)
+      await countSpawn($, 'asked')
+      await appendLog($, { key: `agent:${r.agentId ?? e.tool_use_id}`, model: e.model, effort: '', reason: 'asked for', source: 'asked', out: 0, cacheRead: 0, text: e.prompt.slice(0, 4000), agent: e.subagentType, at: now })
+      return r
+    }
+    const parent = tierOf(e.parentModel) ?? 'L'
+    // The type's own default counts as what it would have run on: Explore's is Haiku.
+    const from: Tier = e.subagentType === 'Explore' ? 'S' : parent
+    const brief = `${e.prompt.slice(0, 4000)}
+
+[This is the task Claude gave a ${e.subagentType} subagent, not a message from the person. Judge the work that subagent needs.]`
+    const r0 = await route(brief, { agentType: e.subagentType, backends: backendsOf($, s.backend) })
+    if (!r0) return next(e)
+    // Never dearer than the chat that sent it; effort at least medium (helpers at low miscounted).
+    const clamped = clampTier(r0.tier, live.modelFloor, live.modelCeiling)
+    const tier = PRICE[clamped] > PRICE[parent] ? parent : clamped
+    const effort = clampEffort(r0.effort, live.effortFloor, live.effortCeiling)
+    const d: Decision = { ...r0, tier, effort: (EFFORT_RANK[effort] ?? 0) < 1 ? 'medium' : effort }
+    pendingPicks.push(d)
+    let r
+    try {
+      r = await next({ ...e, model: MODEL[tier] })
+    } finally {
+      const i = pendingPicks.indexOf(d)
+      if (i >= 0) pendingPicks.splice(i, 1)
+    }
+    if (r.agentId && !agents.has(r.agentId)) agents.set(r.agentId, d)
+    const label = `${shortModel(MODEL[tier])}${tier === 'S' ? '' : ` · ${d.effort}`}`
+    if (tier !== from) {
+      try {
+        $.ui.notice(e.tool_use_id, `arne: ${label} (${plainReason(d.reason)})`)
+      } catch {
+        // the call is no longer open
+      }
+    }
+    await countSpawn($, tier === from ? 'kept' : tier)
+    await appendLog($, { key: `agent:${r.agentId ?? e.tool_use_id}`, model: MODEL[tier], effort: d.effort, reason: d.reason, source: d.source, out: 0, cacheRead: 0, text: e.prompt.slice(0, 4000), agent: e.subagentType, from: MODEL[from], to: MODEL[tier], at: now })
+    return r
+  }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
     const s = await settings($)
@@ -939,16 +1009,6 @@ export const register: Register = (on, options) => {
         await update($, log, list => [...list, row].slice(-200))
         await appendLog($, { ...row, text: e.text, decided: decided ? MODEL[decided.tier] : undefined })
       }
-    } else if (live.subagents && !s.pin) {
-      // While a pin is set nothing is routed (17p): a subagent keeps the model it was spawned with.
-      // Subagents set to Leave: no decision, so their steps keep the model they were spawned with.
-      const agent = (await $.agent.list()).find(a => a.id === e.agentId)
-      const d = await route(e.text, { agentType: agent?.type, backends: backendsOf($, s.backend) })
-      agents.set(e.agentId, d)
-      if (d) {
-        const row: Row = { key: `${e.turnId}:${e.agentId}`, model: MODEL[d.tier], effort: d.effort, reason: d.reason, source: d.source, out: 0, cacheRead: 0 }
-        await appendLog($, { ...row, text: e.text, agent: agent?.type })
-      }
     }
 
     return next(e)
@@ -956,15 +1016,15 @@ export const register: Register = (on, options) => {
 
   on('turn.step', async function* ($, e, next) {
     const isMain = e.agentId === undefined
-    const decision = isMain ? ((await read($, currentAtom)) ?? undefined) : agents.get(e.agentId!)
+    const decision = isMain ? ((await read($, currentAtom)) ?? undefined) : agentPick(e.agentId!, e.model)
 
     // Haiku takes no effort setting. While effortless is on, it keeps the effort it set.
     const effortOwned = await read($, effortless)
     // `e` is the app's own request, before arne touches it: its effort is what the native control says.
     if (isMain && (e.effort ?? null) !== (await read($, appEffort))) await update($, appEffort, () => e.effort ?? null)
-    // The main loop keeps the session's model (17c: no silent rewrite; the real /model moved it, or it
-    // stays). Subagents still get their model per request, since the picker cannot show them.
-    const model = decision && !isMain ? MODEL[decision.tier] : e.model
+    // No request's model is rewritten: the main loop's moves with the real /model (17c), a subagent's was
+    // set at agent.spawn (17x). Only the effort is set here.
+    const model = e.model
     const routed = decision
       ? { ...e, model, effort: effortOwned || decision.keepEffort ? e.effort : tierOf(model) === 'S' ? undefined : decision.effort }
       : e
@@ -984,6 +1044,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    await read($, liveRev) // subscribes: the subagent toggle reads `live` (17x)
     const l = await read($, last)
     const c = await read($, cache)
     const forced = await read($, shown)
@@ -1144,6 +1205,15 @@ export const register: Register = (on, options) => {
       ]
     }
     const menuOpen = await read($, handoffMenu)
+    const subs: SubCount = (await read($, subCount)) ?? {}
+    const moved = (['S', 'M', 'L'] as Tier[]).filter(t => subs[t]).map(t => `${subs[t]} to ${name(t)}`)
+    const parts = [...moved, subs.kept && `${subs.kept} kept`, subs.asked && `${subs.asked} as asked`].filter(Boolean)
+    const routedN = (['S', 'M', 'L', 'kept'] as const).reduce((n, k) => n + (subs[k] ?? 0), 0)
+    const subLine = !live.subagents
+      ? 'Subagents: left on the model they ask for'
+      : parts.length
+        ? `Subagents: ${routedN} routed this chat (${parts.join(', ')})`
+        : 'Subagents: none yet this chat'
     const alertTier = await handoffTier($)
     return (
       <Box flexDirection="column" rowGap={gui ? 1 : 0}>
@@ -1320,6 +1390,11 @@ export const register: Register = (on, options) => {
                       ))}
                     </Box>
                   )}
+                  {/* What arne did with this chat's subagents, and the switch for it (17x). */}
+                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
+                    <Text color="subtle">{subLine}</Text>
+                    <Button key="subs" plain label={`Route subagents: ${live.subagents ? 'on' : 'off'}`} onPress={() => setOption($, 'subagents', !live.subagents)} />
+                  </Box>
                   {doneTo && <Text color="subtle">{`Handed off to ${name(doneTo as Tier)}. Old chat saved in history; archive it from the sidebar when you are done.`}</Text>}
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Box flexDirection="row" flexWrap="wrap" gap={2}>

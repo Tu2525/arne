@@ -53,7 +53,8 @@ export async function route(text: string, ctx: Ctx = {}): Promise<Decision | und
   const prior = ctx.agentType ? PRIORS[ctx.agentType] : undefined
   if (prior?.tier === 'L') return { ...prior, source: 'prior' }
 
-  const f = fast(text)
+  // A subagent's brief is Claude's, not the person's: its length says nothing about difficulty (17x).
+  const f = ctx.agentType ? undefined : fast(text)
   if (f === 'keep') {
     if (ctx.prev) return { ...ctx.prev, reason: 'continuation', source: 'prev' }
   } else if (f) {
