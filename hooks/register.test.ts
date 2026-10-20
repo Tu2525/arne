@@ -13,6 +13,10 @@ function engine(on: any, start = 'claude-opus-5-5') {
     toasts: [] as string[],
     deny: undefined as string | undefined, // set it and every config write is refused
     compactGate: undefined as Promise<void> | undefined, // set it and /compact waits for it
+    // Set it ('arne@x') and rows are keyed as with two arne plugins enabled: `arne.<field>` names no row.
+    rowPrefix: undefined as string | undefined,
+    rows: [] as { key: string; provider: { plugin: string } }[],
+    writes: [] as string[],
   }
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on)
@@ -24,7 +28,13 @@ function engine(on: any, start = 'claude-opus-5-5') {
     s.toasts.push(e.text)
     return { value: undefined }
   })
-  on('config.set', (_$: unknown, e: { value: unknown }) => (s.deny ? { deny: s.deny } : { value: e.value }))
+  on('config.set', (_$: unknown, e: { key: string; value: unknown }) => {
+    if (s.deny) return { deny: s.deny }
+    if (s.rowPrefix && !e.key.startsWith(`${s.rowPrefix}.`)) return { deny: `arne: $.config.set: no /config row with key ${e.key} ($.config.list names them)` }
+    s.writes.push(e.key)
+    return { value: e.value }
+  })
+  on('config.list', () => ({ value: s.rows }))
   on('classic.PostModelSwitch', () => ({}))
   on('classic.PostCompact', () => ({}))
   on('session.model', () => ({ value: s.model }))
@@ -642,4 +652,22 @@ test('a long brief is no Opus subagent; a moved one is said on its call; Subagen
   await spawn('t4')
   expect(got[n]).toEqual({ tool_use_id: 't4', prompt: 'Design the plan: '.padEnd(5000, 'x'), description: 'a task', subagentType: 'general-purpose', parentModel: 'claude-sonnet-5-5', background: false, fork: false })
   expect((await $.command.run({ command: 'arne', args: 'subagents on' })).text).toBe('arne routes subagents.')
+})
+
+test('two arne plugins enabled: a write finds the row arne owns; two rows of its own refuse with a hint; toasts carry no doubled prefix (17x)', async ($: any, on: any) => {
+  const { s } = engine(on)
+  s.rowPrefix = 'arne@x'
+  s.rows = [{ key: 'arne@x.subagents', provider: { plugin: 'arne' } }, { key: 'other.subagents', provider: { plugin: 'other' } }]
+  expect((await $.command.run({ command: 'arne', args: 'subagents off' })).text).toBe('arne leaves subagents on the model they ask for.')
+  expect(s.writes).toEqual(['arne@x.subagents'])
+
+  s.rows.push({ key: 'arne@y.subagents', provider: { plugin: 'arne' } })
+  expect((await $.command.run({ command: 'arne', args: 'subagents on' })).text).toBe('arne leaves subagents on the model they ask for.')
+  expect(s.toasts.at(-1)).toBe('Could not change subagents: two copies of arne are enabled; turn one off in /plugin')
+
+  s.rows = []
+  await $.command.run({ command: 'arne', args: 'subagents on' })
+  expect(s.toasts.at(-1)).toBe('Could not change subagents: no /config row with key arne.subagents ($.config.list names them)')
+  s.rowPrefix = undefined
+  await $.command.run({ command: 'arne', args: 'subagents on' })
 })

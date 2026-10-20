@@ -101,7 +101,7 @@ async function disableEffortless($: any) {
   await update($, disabling, () => true)
   const r = await $.process.run(['claude', 'plugin', 'disable', EFFORTLESS], { timeoutMs: 60_000 }).catch(() => undefined)
   await update($, disabling, () => false)
-  $.ui.toast(r?.exitCode === 0 ? 'arne: effortless disabled. Restart to hand effort to arne.' : 'arne: could not disable effortless; disable it from the plugin list.')
+  $.ui.toast(r?.exitCode === 0 ? 'Effortless disabled. Restart to hand effort to arne.' : 'Could not disable effortless; disable it from the plugin list.')
 }
 
 // One compact at a time: the alerts show "summarizing…" while it runs, and a second press returns false.
@@ -112,7 +112,7 @@ async function compactNow($: any, note: string): Promise<boolean> {
     await $.command.run({ command: 'compact', args: note.trim() })
     return true
   } catch {
-    $.ui.toast('arne: compact failed; try again when the session is idle')
+    $.ui.toast('Compact failed; try again when the session is idle')
     return false
   } finally {
     await update($, compacting, () => false)
@@ -165,9 +165,9 @@ ${r.text}
     step = 'sending the summary'
     await $.prompt.submit({ text, asUser: true })
     await update($, handedOff, () => tier)
-    $.ui.toast(`arne: handed off to ${shortModel(MODEL[tier])}. Old chat saved in history; archive it from the sidebar when you are done.`)
+    $.ui.toast(`Handed off to ${shortModel(MODEL[tier])}. Old chat saved in history; archive it from the sidebar when you are done.`)
   } catch {
-    $.ui.toast(`arne: handoff stopped at ${step}.${step === 'the summary' ? '' : ` The summary is on your clipboard and in ${HANDOFF_FILE}.`}`)
+    $.ui.toast(`Handoff stopped at ${step}.${step === 'the summary' ? '' : ` The summary is on your clipboard and in ${HANDOFF_FILE}.`}`)
   } finally {
     handingOff = false
     await update($, compacting, () => false)
@@ -188,7 +188,7 @@ async function sendAsUser($: any, text: string) {
   try {
     await $.prompt.submit({ text, asUser: true })
   } catch {
-    $.ui.toast('arne: could not send your message; it is back in the prompt box')
+    $.ui.toast('Could not send your message; it is back in the prompt box')
     await $.prompt.fill({ text, mode: 'replace' }).catch(() => undefined)
   }
 }
@@ -314,7 +314,7 @@ async function resume($: any) {
 // arne's own config writes while they run, by key. The app never shows them to arne's config.set hook
 // (index.d.ts, $.config.set); the test kit does, so the hook skips these keys to match the app.
 const ownWrites = new Set<string>()
-async function ownSet($: any, key: string, value: unknown): Promise<{ value: unknown } | { deny: string }> {
+async function setOnce($: any, key: string, value: unknown): Promise<{ value: unknown } | { deny: string }> {
   ownWrites.add(key)
   try {
     return await $.config.set({ key, value })
@@ -323,6 +323,17 @@ async function ownSet($: any, key: string, value: unknown): Promise<{ value: unk
   } finally {
     ownWrites.delete(key)
   }
+}
+// With two arne plugins enabled (a stale cached copy and a dev one), the engine keys rows
+// `arne@<marketplace>.<field>`, and `arne.<field>` names no row: find arne's own row and write that.
+async function ownSet($: any, key: string, value: unknown): Promise<{ value: unknown } | { deny: string }> {
+  const r = await setOnce($, key, value)
+  if (!('deny' in r) || !r.deny.includes('no /config row')) return r
+  const field = key.slice(key.indexOf('.') + 1)
+  const rows: { key: string; provider?: { plugin?: string } }[] = await $.config.list().catch(() => [])
+  const mine = rows.filter(row => row.provider?.plugin === 'arne' && row.key.endsWith(`.${field}`))
+  if (mine.length > 1) return { deny: 'two copies of arne are enabled; turn one off in /plugin' }
+  return mine.length && mine[0]!.key !== key ? setOnce($, mine[0]!.key, value) : r
 }
 
 // Puts one option into `live` and onto every surface: the band (isOff), the Settings pane (liveRev), the status line.
@@ -345,7 +356,8 @@ async function setOption($: any, field: keyof Live, value: unknown) {
   const r = await ownSet($, `arne.${field}`, value)
   if ('deny' in r) {
     await applyLive($, field, was)
-    $.ui.toast(`arne: could not change ${field}: ${r.deny}`)
+    // The engine's own "<plugin>: $.config.set: " prefix: the toast already shows arne's name.
+    $.ui.toast(`Could not change ${field}: ${r.deny.replace(/^[^:]*: \$\.config\.set: /, '')}`)
   }
 }
 
@@ -388,7 +400,7 @@ async function moveModel($: any, target: string) {
     arneSwitched = true
   } catch {
     await update($, expectedAtom, () => was)
-    $.ui.toast(`arne: could not switch /model to ${shortModel(target)}`)
+    $.ui.toast(`Could not switch /model to ${shortModel(target)}`)
   } finally {
     switching = false
   }
@@ -406,7 +418,7 @@ async function feedback($: any, verdict: 'up' | 'down') {
     await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify({ type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }) + '\n')
   } catch {
     await update($, thanked, () => was)
-    $.ui.toast('arne: could not log that feedback')
+    $.ui.toast('Could not log that feedback')
   }
 }
 
@@ -457,7 +469,7 @@ async function startLaya($: any) {
     }
   } catch {
     // laya not installed, or the server exited: the why line says Haiku judged until it answers
-    $.ui.toast('arne: laya-serve did not start (not on PATH?). Haiku judges until it does.')
+    $.ui.toast('laya-serve did not start (not on PATH?). Haiku judges until it does.')
   } finally {
     layaStarting = false
   }
@@ -591,7 +603,7 @@ async function switchThenSend($: any, target: string | undefined, effort: Decisi
       await $.command.run({ command: 'effort', args: effort })
       await update($, appEffort, () => effort)
     } catch {
-      $.ui.toast(`arne: could not set /effort to ${effort}`)
+      $.ui.toast(`Could not set /effort to ${effort}`)
     }
   }
   if ((await modeOf($)) === 'on' && target) {
@@ -604,7 +616,7 @@ async function switchThenSend($: any, target: string | undefined, effort: Decisi
     } catch {
       await update($, expectedAtom, () => was)
       planned.delete(text) // decided for a model it is not on: turn.start decides again
-      $.ui.toast(`arne: could not switch /model to ${shortModel(target)}; sending on the current model`)
+      $.ui.toast(`Could not switch /model to ${shortModel(target)}; sending on the current model`)
     } finally {
       switching = false
     }
@@ -695,7 +707,8 @@ export const register: Register = (on, options) => {
   on('config.set', async ($, e, next) => {
     if (ownWrites.has(e.key)) return next(e)
     const r = await next(e)
-    const field = e.key.startsWith('arne.') ? (e.key.slice(5) as keyof Live) : undefined
+    // `arne.<field>`, or `arne@<marketplace>.<field>` while another arne is enabled too.
+    const field = /^arne(@[^.]+)?\./.test(e.key) ? (e.key.slice(e.key.indexOf('.') + 1) as keyof Live) : undefined
     if (field && FIELDS.includes(field) && !('deny' in r)) await applyLive($, field, r.value)
     return r
   }).catch(($, e, next) => next(e))
