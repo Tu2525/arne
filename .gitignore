@@ -2,3 +2,6 @@ node_modules/
 tsconfig.json
 brag-output/
 .canvas-tmp/
+PLAN.md
+arne-archive/
+arne-handoff.md

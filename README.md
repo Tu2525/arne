@@ -65,4 +65,4 @@ arne costs 53% less per task than no mods and 35% less than effortless.
 
 **Where arne missed.** Step 17's pass condition is "correct on everything", and arne missed it on one run. arne sent the JSDoc task (t2) to Haiku · low in both reps, and Haiku skipped one export once. Raising the floor for multi-edit tasks, or tuning Laya on these rows, should close it.
 
-**Fewer reps than planned.** PLAN.md asks for 3 runs per setup. This bench ran 2 to save plan limits.
+**Fewer reps than planned.** The plan was 3 runs per setup. This bench ran 2 to save plan limits.
