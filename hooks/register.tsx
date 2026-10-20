@@ -712,9 +712,9 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
   const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
     const set = (value: unknown) => setOption($, key, value)
     return (
-      <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
+      <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
         <Text>{label}</Text>
-        <Box flexDirection="row" flexWrap="wrap" flexGrow={1} justifyContent="flex-end" columnGap={1}>
+        <Box flexDirection="row" flexWrap="wrap" flexGrow={1} justifyContent="flex-end" columnGap={1} rowGap={1}>
           {options.map(o =>
             o.value === live[key] ? (
               <Button key={`${key}-${String(o.value)}`} variant="secondary" label={o.label} onPress={() => set(o.value)} />
@@ -730,7 +730,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
   const card = (title: string, rows: unknown[], note?: unknown) => (
     <Box key={`card-${title}`} flexDirection="column" flexGrow={1}>
       <Text size="footnote" dimColor>{title}</Text>
-      <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+      <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1} rowGap={gui ? 1 : 0}>
         {rows as any}
       </Box>
       {note as any}
@@ -760,7 +760,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
           ]),
         ], needsKey && (
           // No masked Input exists, so the key is never typed here: the button points to /config's secure field.
-          <Box key="jev-key" flexDirection="row" columnGap={2}>
+          <Box key="jev-key" flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
             <Text size="footnote" dimColor>Jev needs a TypeSafe key.</Text>
             <Button key="add-key" plain label="Add key…" onPress={() => $.ui.toast(ADD_KEY_HINT)} />
           </Box>
@@ -799,7 +799,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
   const tile = (name: string, base: number) => {
     const t = savedText(st.spent, base)
     return (
-      <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1} flexGrow={1}>
+      <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1} flexGrow={1}>
         <Text size="footnote" dimColor>{`Against ${name}`}</Text>
         <Text weight="semibold" tabular>{t.headline}</Text>
         <Text size="footnote" dimColor tabular>{t.sub}</Text>
@@ -808,9 +808,9 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
   }
   return (
     <Box key="stats-view" flexDirection="column" gap={1}>
-      <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
         {viewHead($, { Box, Button, Text }, 'Stats')}
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {PERIODS.map(([p, label]) =>
             p === period ? (
               <Button key={`period-${p}`} variant="secondary" label={label} onPress={() => update($, statsPeriod, () => p)} />
@@ -831,7 +831,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
             {tile('Opus · medium', st.opus)}
             {tile('Sonnet · medium', st.sonnet)}
           </Box>
-          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
             {([['With arne', st.spent], ['Sonnet · medium', st.sonnet], ['Opus · medium', st.opus]] as const).map(([label, v]) => (
               <Box key={`bar-${label}`} flexDirection="column">
                 <Box flexDirection="row" justifyContent="space-between">
@@ -844,7 +844,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
           </Box>
           <Box flexDirection="column">
             <Text size="footnote" dimColor>Where it went</Text>
-            <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+            <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
               {st.lines.map(l => (
                 <Box key={`line-${l.label}`} flexDirection="row" columnGap={2}>
                   <Box flexGrow={1}>
@@ -1418,12 +1418,12 @@ export const register: Register = (on, options) => {
     // An alert: a semibold headline over one dim sentence, the actions on the right in macOS order
     // (dismiss first, the primary last). The actions drop under the text when there is no room beside it.
     const banner = (key: string, headline: string, sentence: string, actions: unknown) => (
-      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={2} borderStyle="round" borderColor="warning" paddingX={gui ? undefined : 1}>
+      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={2} rowGap={1} borderStyle="round" borderColor="warning" paddingX={1}>
         <Box flexDirection="column" flexShrink={1}>
           <Text weight="semibold">{headline}</Text>
           <Text size="footnote" dimColor>{sentence}</Text>
         </Box>
-        <Box key={`${key}-actions`} flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
+        <Box key={`${key}-actions`} flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} columnGap={1} rowGap={1}>
           {actions as any}
         </Box>
       </Box>
@@ -1543,7 +1543,7 @@ export const register: Register = (on, options) => {
               <Button key="compact-send" variant="primary" label={`Summarize, then continue · $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}`} onPress={() => compactThenContinue($)} />,
             ],
           )}
-        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
           {mode === 'paused' ? (
             <Box flexDirection="row" gap={1}>
               <Text color="claude">◆</Text>
@@ -1588,10 +1588,6 @@ export const register: Register = (on, options) => {
                   </Button>
                 </Box>
               )}
-              {/* Plugins cannot move the app's model menu, so a mismatch shows on the band itself, not only in the panel. */}
-              {picker && running && tierOf(picker) !== tierOf(running) && (
-                <Text color="warning" wrap="truncate-end">{`⇄ The app's model menu shows ${shortModel(picker)}; arne runs ${shortModel(running)}. Plugins can't change that menu.`}</Text>
-              )}
               {open && view === 'settings' && (
                 <Box flexDirection="column" marginTop={1}>
                   {settingsView($, { Box, Button, Text }, gui, cols, live.backend === 'jev' && !(await typesafeKey($)))}
@@ -1606,7 +1602,7 @@ export const register: Register = (on, options) => {
                 <Box flexDirection="column" gap={1} marginTop={1}>
                   {/* Why: the sentence with the two ratings on its right, one footnote under it. */}
                   <Box flexDirection="column">
-                    <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
+                    <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
                       <Text>{why}</Text>
                       {l && !pinned && thankedKey !== l.key && (
                         <Box flexDirection="row" flexShrink={0} gap={1}>
@@ -1619,7 +1615,7 @@ export const register: Register = (on, options) => {
                     {whyNote !== '' && <Text size="footnote" dimColor>{whyNote}</Text>}
                   </Box>
                   {costs.length > 0 && (
-                    <Box key="costs" flexDirection="column">
+                    <Box key="costs" flexDirection="column" rowGap={gui ? 1 : 0}>
                       {[{ key: 'head', label: '', now: 'Now', each: 'Each turn', note: '', tier: undefined as Tier | undefined }, ...costs].map(r => (
                         <Box key={`cost-${r.key}`} flexDirection="column">
                           <Box key={`cost-${r.key}-row`} flexDirection="row" alignItems="center" columnGap={2}>
@@ -1647,8 +1643,8 @@ export const register: Register = (on, options) => {
                       ))}
                     </Box>
                   )}
-                  <Box flexDirection="column">
-                    <Box flexDirection="row" flexWrap="wrap" alignItems="center">
+                  <Box flexDirection="column" rowGap={gui ? 1 : 0}>
+                    <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} rowGap={1}>
                       <Box width={8} flexShrink={0}>
                         <Text size="footnote" dimColor>Model</Text>
                       </Box>
@@ -1659,7 +1655,7 @@ export const register: Register = (on, options) => {
                         v => void setPinPart($, { tier: v === 'auto' ? undefined : TIER_OF[v] }),
                       )}
                     </Box>
-                    <Box flexDirection="row" flexWrap="wrap" alignItems="center">
+                    <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} rowGap={1}>
                       <Box width={8} flexShrink={0}>
                         <Text size="footnote" dimColor>Effort</Text>
                       </Box>
@@ -1679,8 +1675,8 @@ export const register: Register = (on, options) => {
                   </Box>
                   {doneTo && <Text size="footnote" dimColor>{`Handed off to ${name(doneTo as Tier)}. Old chat saved in history; archive it from the sidebar when you are done.`}</Text>}
                   {/* Footer: the views and Handoff… on the left, Turn off alone on the right. */}
-                  <Box key="footer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
-                    <Box flexDirection="row" flexWrap="wrap" gap={2}>
+                  <Box key="footer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1} justifyContent="space-between">
+                    <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
                       <Button key="gear" plain label="Settings" onPress={() => openView($, 'settings')} />
                       <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />
                       {!tableHandoff && (busy ?? <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />)}
