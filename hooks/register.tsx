@@ -685,6 +685,10 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('session.start', async ($, e, next) => {
+    // Busy flags are atoms, so they outlive a reload or a quit that cut their `finally` short: a new session clears them.
+    await update($, compacting, () => false)
+    await update($, compactSendingAtom, () => false)
+    await update($, disabling, () => false)
     await $.command.register({
       name: 'arne',
       description: 'Auto model and effort routing: on, off, pin, unpin, handoff, why, log, stats, backend, debug',
@@ -1170,7 +1174,12 @@ export const register: Register = (on, options) => {
             busy ?? [
               <Button key="compact" variant="primary" label="Summarize" onPress={() => compactNow($, '')} />,
               <Button key="handoff" plain label={`Handoff to ${name(alertTier)}`} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
-              <Button key="continue" plain role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
+              <Button key="continue" plain role="dismiss" label="Dismiss" onPress={async () => {
+                  // One Dismiss covers the whole cold spell: the heavy alert would otherwise take its place.
+                  const until = offer.c.warmUntil[offer.c.model] ?? 0
+                  await update($, heavyDismissed, () => until)
+                  await update($, coldDismissed, () => until)
+                }} />,
             ],
           )}
         {/* A big chat with a warm cache is never a reason for an alert (17p): only once it has gone cold. */}

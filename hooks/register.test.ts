@@ -494,9 +494,9 @@ async function coldHeavy($: any, s: any, clock: any) {
 
 test('heavy "Dismiss" hides the banner (17u)', async ($: any, on: any) => {
   const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  await $.config.set({ key: 'arne.coldTokens', value: 200_000 }) // no cold offer, so the heavy alert shows
   await coldHeavy($, s, clock)
   const band = await $.ui.mount(band80)
-  await band.press({ key: 'continue' }) // the cold alert's Dismiss
   expect(await band.find({ type: 'Text', text: /^Chat is 160k tokens/ })).toBeDefined()
   await band.press({ key: 'dismiss' })
   expect(await band.find({ type: 'Text', text: /^Chat is/ }).catch(() => undefined)).toBeUndefined()
@@ -544,4 +544,40 @@ test('the first prompt after a compact is sent, not held, even past the TTL (17v
   expect(String((r as any).drop ?? '')).not.toContain('holding')
   for (let i = 0; i < 3; i++) await clock.settle()
   expect(s.entered).toEqual(['what is a mutex'])
+})
+
+test('one cold Dismiss covers the cold spell: no heavy alert after it; the next cold spell shows them again', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  await coldHeavy($, s, clock)
+  const band = await $.ui.mount(band80)
+  expect(await band.find({ type: 'Text', text: /^The cache went cold/ })).toBeDefined()
+  await band.press({ key: 'continue' }) // the cold alert's Dismiss
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(await band.find({ type: 'Text', text: /^The cache went cold/ }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /^Chat is/ }).catch(() => undefined)).toBeUndefined()
+  await band.unmount()
+  await coldHeavy($, s, clock) // a new response, then cold again: a new warmUntil
+  const again = await $.ui.mount(band80)
+  expect(await again.find({ type: 'Text', text: /^The cache went cold/ })).toBeDefined()
+})
+
+test('a session start clears a busy flag a reload left behind: the cold alert has its buttons and Summarize compacts', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', (_$: unknown, e: unknown) => e)
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', () => ({ value: '' }))
+  await coldHeavy($, s, clock)
+  // A compact that never finishes stands in for one a reload cut short: its `finally` never runs.
+  s.compactGate = new Promise<void>(() => {})
+  const band = await $.ui.mount(band80)
+  void band.press({ key: 'compact' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'summarizing…' })).toBeDefined()
+  await $.session.start({ source: 'startup', cwd: '/p' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'summarizing…' }).catch(() => undefined)).toBeUndefined()
+  s.compactGate = undefined
+  await band.press({ key: 'compact' })
+  expect(s.ran.filter(r => r.startsWith('/compact')).length).toBe(2)
 })
