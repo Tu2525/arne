@@ -818,7 +818,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
 
 const STATS_EMPTY: Record<Period, string> = { today: 'No turns today yet.', week: 'No turns in the last 7 days yet.', all: 'No turns yet.' }
 
-// The panel's Stats view (17q): what arne saved against running every turn on Opus or Sonnet at medium.
+// The panel's Stats view (17q): what arne saved against running every turn on Opus at medium.
 // An estimate, said so. Back returns to the main panel.
 async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: boolean) {
   const period = (await read($, statsPeriod)) as Period
@@ -827,7 +827,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
   const usd = (v: number) => `$${v.toFixed(2)}`
   // Bars as text, so they follow the theme: one accent for arne, dim for the baselines.
   const room = Math.max(10, Math.min(40, cols - 24))
-  const max = Math.max(st.spent, st.sonnet, st.opus, 1e-9)
+  const max = Math.max(st.spent, st.opus, 1e-9)
   const bar = (v: number) => '█'.repeat(Math.max(v > 0 ? 1 : 0, Math.round((v / max) * room)))
   const tile = (name: string, base: number) => {
     const t = savedText(st.spent, base)
@@ -856,16 +856,15 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
       {st.turns === 0 && st.lines.length === 0 ? (
         <Box flexDirection="column">
           <Text>{STATS_EMPTY[period]}</Text>
-          <Text size="footnote" dimColor>Once there are, this shows what arne spent next to the same turns on Opus or Sonnet at medium effort. It is an estimate.</Text>
+          <Text size="footnote" dimColor>Once there are, this shows what arne spent next to the same turns on Opus at medium effort. It is an estimate.</Text>
         </Box>
       ) : (
         <Box flexDirection="column" gap={1}>
           <Box flexDirection={cols < 60 ? 'column' : 'row'} gap={1}>
             {tile('Opus · medium', st.opus)}
-            {tile('Sonnet · medium', st.sonnet)}
           </Box>
           <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1}>
-            {([['With arne', st.spent], ['Sonnet · medium', st.sonnet], ['Opus · medium', st.opus]] as const).map(([label, v]) => (
+            {([['With arne', st.spent], ['Opus · medium', st.opus]] as const).map(([label, v]) => (
               <Box key={`bar-${label}`} flexDirection="column">
                 <Box flexDirection="row" justifyContent="space-between">
                   <Text dimColor={label !== 'With arne'}>{label}</Text>
@@ -889,7 +888,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
               ))}
             </Box>
           </Box>
-          <Text size="footnote" dimColor>An estimate: each turn's real tokens, priced again as if every turn ran on Opus at medium effort, or on Sonnet at medium effort. Model switches and summaries count against arne.</Text>
+          <Text size="footnote" dimColor>An estimate: each turn's real tokens, priced again as if every turn ran on Opus at medium effort. Model switches and summaries count against arne.</Text>
         </Box>
       )}
     </Box>
@@ -1121,11 +1120,11 @@ export const register: Register = (on, options) => {
           PERIODS.map(async ([p, label]) => {
             const st = await statsFor($, p)
             const opus = savedText(st.spent, st.opus)
-            return `${label}: $${st.spent.toFixed(2)} spent over ${st.turns} turns. Against Opus · medium: ${opus.headline.toLowerCase()} (${opus.sub}). Against Sonnet · medium: ${savedText(st.spent, st.sonnet).headline.toLowerCase()}.`
+            return `${label}: $${st.spent.toFixed(2)} spent over ${st.turns} turns. Against Opus · medium: ${opus.headline.toLowerCase()} (${opus.sub}).`
           }),
         )
         await openView($, 'stats')
-        return { text: `arne stats (an estimate: each turn's real tokens, priced again on Opus or Sonnet):\n${lines.join('\n')}` }
+        return { text: `arne stats (an estimate: each turn's real tokens, priced again on Opus):\n${lines.join('\n')}` }
       }
       case 'subagents': {
         // `on` was the old switch: it reads as the default ceiling.

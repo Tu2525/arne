@@ -68,7 +68,7 @@ Once a chat passes 30k tokens, the panel shows one line per cheaper tier: what a
 
 ### Stats
 
-Open it from the band's panel (Settings → Stats) or with `/arne stats`. It shows an estimate of what arne saved today, over the last 7 days and in total. To get it, each turn's real tokens are priced again as if the turn had run on Opus or Sonnet at medium effort. The figure can't be exact, because a different model would have written a different answer. Model switches and summaries are counted against arne.
+Open it from the band's panel (Settings → Stats) or with `/arne stats`. It shows an estimate of what arne saved today, over the last 7 days and in total. To get it, each turn's real tokens are priced again as if the turn had run on Opus at medium effort. The figure can't be exact, because a different model would have written a different answer. Model switches and summaries are counted against arne.
 
 ### Subagents (experimental)
 

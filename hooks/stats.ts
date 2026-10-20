@@ -57,7 +57,7 @@ export const priceOn = (r: UsageRow, t: Tier, asRead = false) =>
   dollars(PRICE[t] * (r.input + r.read * READ + r.write * (asRead ? READ : WRITE) + r.out * OUT))
 
 export type Line = { label: string; count: number; cost: number; tokens?: number } // tokens: a line with no known price (Jev)
-export type Summary = { spent: number; sonnet: number; opus: number; lines: Line[]; turns: number }
+export type Summary = { spent: number; opus: number; lines: Line[]; turns: number }
 
 /** Totals for the rows at or after `since`. Rows without usage never get here (usageRow drops them). */
 export function summarize(rows: UsageRow[], since: number): Summary {
@@ -70,7 +70,6 @@ export function summarize(rows: UsageRow[], since: number): Summary {
   const agents: Line = { label: 'Subagents', count: 0, cost: 0 }
   const extra: Line = { label: 'Switches and summaries', count: 0, cost: 0 }
   let spent = 0
-  let sonnet = 0
   let opus = 0
   for (const r of picked) {
     const t = tierOf(r.model)!
@@ -83,7 +82,6 @@ export function summarize(rows: UsageRow[], since: number): Summary {
       continue
     }
     // The default stays on one model, so it never pays a switch's cache rewrite: its writes read as reads.
-    sonnet += priceOn(r, 'M', r.switched)
     opus += priceOn(r, 'L', r.switched)
     const switchCost = r.switched ? cost - priceOn(r, t, true) : 0
     if (r.switched) {
@@ -95,7 +93,7 @@ export function summarize(rows: UsageRow[], since: number): Summary {
     line.cost += cost - switchCost
   }
   const lines = [...byTier.values(), agents, extra, jev].filter(l => l.count > 0)
-  return { spent, sonnet, opus, lines, turns: picked.filter(r => r.kind !== 'summary').length }
+  return { spent, opus, lines, turns: picked.filter(r => r.kind !== 'summary').length }
 }
 
 /** "Saved $X" against a baseline, or "$X more" when arne cost more; with the percent of the baseline. */
