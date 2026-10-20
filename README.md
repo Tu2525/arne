@@ -1,12 +1,38 @@
 # arne
 
-A Claude Code plugin that sends each prompt and each subagent run to the cheapest model and effort that can handle it (Haiku 5.5, Sonnet 5.5 or Opus 5.5). It manages the cache, compaction and model switches around that choice. Every choice shows in the band above the prompt and is logged with its cost to `~/.claude/arne/decisions.jsonl`, which stays on your machine. `/arne` overrides it.
+**a**uto **r**oute a**n**d **e**ffort
 
-arne replaces effortless by HeyCubit (MIT). Its cost ratios and the bench below come from effortless. Turn effortless off while arne is on.
+**Your typo fix doesn't need Opus.** arne is a Claude Code plugin that sends each prompt to the cheapest model and effort that can handle it (Haiku 5.5, Sonnet 5.5 or Opus 5.5), and does the cache math before you switch or hand off a big chat.
 
-[![arne demo: 21 seconds](demo/arne.jpg)](demo/arne.mp4)
+In its bench, arne cost **53% less per task** than running everything on Opus, and 35% less than effortless.
 
-[![arne bench: 53% cheaper per task](demo/poster.png)](demo/poster.png)
+[![arne demo, 21 seconds. Click to play.](demo/arne.jpg)](demo/arne.mp4)
+
+## What it does
+
+- **Routes every prompt.** A small judge (Haiku by default) reads the prompt and picks a tier and effort. A rename goes to Haiku · low, and a design question goes to Opus · high.
+- **Shows its work.** The band above the prompt shows the model that's running and why it was picked. Every decision is logged with its cost to `~/.claude/arne/decisions.jsonl`, which never leaves your machine.
+- **Knows when switching costs more than staying.** On a warm cache, moving a big chat to a cheaper model can cost more than it saves. arne prices staying, switching and a handoff side by side.
+- **Hands off cleanly.** Haiku summarizes the chat to your clipboard so you can continue in a fresh chat on a cheaper tier.
+- **Stays out of the way.** Pin a model whenever you want, and the pin lasts for that chat. `/arne off` turns routing off.
+
+## Screenshots
+
+The band above the prompt shows the model that's running and why it was picked:
+
+![The arne band above the prompt](demo/ui-band.png)
+
+Open the band to see the cost of staying, switching or handing off, and to pin a model or effort:
+
+![arne panel comparing stay, switch and handoff costs](demo/ui-costs.png)
+
+Settings, where you choose the judge and the cheapest and strongest model and effort arne may use:
+
+![arne settings](demo/ui-settings.png)
+
+Stats, which estimates what arne saved (shown here with example data):
+
+![arne stats](demo/ui-stats.png)
 
 ## Install
 
@@ -15,41 +41,55 @@ arne replaces effortless by HeyCubit (MIT). Its cost ratios and the bench below 
 /plugin install arne@arne
 ```
 
-Then disable effortless if you have it, and restart.
+Restart Claude Code afterwards. If you use effortless, turn it off first, because arne replaces it.
 
 ## Use
 
-The band above the prompt is the control: **● Auto** turns routing on or off (or resumes it after you pick a model yourself), the model and effort pickers pin a choice (Auto unpins), **why** shows the last decision with 👍/👎, **cache** shows what a cold cache will cost, and **⚙** opens the settings. The same settings live in `/config`.
+The band above the prompt is the control:
 
-`/arne` covers the same ground from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `handoff`, `subagents auto|haiku|sonnet|opus|off` (experimental, off by default), `why`, `log`, `stats`, `backend haiku|heuristic|laya|jev`, `settings`. A pin belongs to its chat: a new chat starts on Auto.
+| Control | What it does |
+| --- | --- |
+| **● Auto** | Turns routing on or off, or resumes it after you pick a model yourself |
+| model / effort | Pins a choice for this chat (Auto unpins) |
+| **why** | Shows the last decision, with 👍/👎 to rate it |
+| **cache** | Shows what a cold cache will cost |
+| **⚙** | Settings (also in `/config`) |
 
-**Jev** is TypeSafe's hosted judge, off by default. Pick it and your prompts and the task card leave this machine. Set the key in /config (arne → TypeSafe API key, kept in secure storage, never in settings.json) or `TYPESAFE_API_KEY`, which wins when both are set; make one at console.typesafe.ai/keys. Without a key, Settings says so and Haiku judges. Stats counts Jev's calls in tokens, since its prices aren't published.
+`/arne` does the same from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `handoff`, `subagents auto|haiku|sonnet|opus|off`, `why`, `log`, `stats`, `backend haiku|heuristic|laya|jev`, `settings`.
 
-**Stats** (the band's panel → Settings → Stats, or `/arne stats`) shows what arne saved today, over 7 days and in all. It is an estimate, never an exact figure: each turn's real tokens are priced again as if the turn ran on Opus or Sonnet at medium effort. A different model would have written a different answer, so the real difference can't be known. Model switches and summaries count against arne, and turns logged before Stats existed are skipped.
+### Handoff
 
-**Handoff** (the band's panel, the cold and heavy alerts, or `/arne handoff [haiku|sonnet|opus]`) has Haiku summarize the chat into `arne-handoff.md` and the clipboard. The Handoff setting picks what happens next: **New chat** (default) asks you to open a new chat on the tier you picked and paste, leaving this chat as it is, since plugins can't open a chat or paste into one; **Clear** runs `/clear`, moves to the tier and sends the summary as the first message, after saving the old chat to `arne-archive/`. When a cheaper model fits but switching on a warm cache costs more than it saves, the panel prices staying, switching and a handoff side by side. In a chat past the cold-offer size (30k tokens by default) the main panel also shows one line per cheaper tier: what a handoff costs now and how many turns until it breaks even.
+Open it from the band's panel, from the cold-cache and heavy-chat alerts, or with `/arne handoff [haiku|sonnet|opus]`. Haiku summarizes the chat into `arne-handoff.md` and copies it to the clipboard. The **Handoff** setting decides what happens next:
 
-**Subagents** get their model when they start, at medium effort or more, never dearer than the chat that sent them or the **Subagents** ceiling in Settings (`Auto · Haiku · Sonnet · Opus · Off`, default Auto, which is no ceiling; also `/arne subagents auto|haiku|sonnet|opus|off`). A model the call asked for ("use haiku to write this") runs as asked when it is at or under the ceiling; a dearer one runs on the ceiling, and the Agent call says "arne: Sonnet (capped from Opus)". Forks, teammates and workflow agents are left alone, and Off leaves every subagent alone. When arne moves one, it says so on the Agent call, and the band's panel counts this chat's subagents.
+- **New chat** (default): you open a new chat on the tier you picked and paste the summary. The old chat stays as it is. Plugins can't open a chat or paste into one for you.
+- **Clear:** arne runs `/clear`, switches tier and sends the summary as the first message. The old chat is saved to `arne-archive/` first.
 
-**Plugins can't move the app's model menu.** arne switches with the real `/model`, but the desktop app's model menu can keep showing your last pick; the band is the model that actually runs.
+Once a chat passes 30k tokens, the panel shows one line per cheaper tier: what a handoff costs now, and how many turns until it pays off.
 
-## Credits
+### Stats
 
-effortless by HeyCubit is MIT-licensed. arne reuses its cost formulas and its bench tasks; its licence is in [bench/LICENSE.effortless](bench/LICENSE.effortless).
+Open it from the band's panel (Settings → Stats) or with `/arne stats`. It shows an estimate of what arne saved today, over the last 7 days and in total. To get it, each turn's real tokens are priced again as if the turn had run on Opus or Sonnet at medium effort. The figure can't be exact, because a different model would have written a different answer. Model switches and summaries are counted against arne.
 
-## License
+### Subagents (experimental)
 
-MIT, see [LICENSE](LICENSE).
+This is off by default. When it's on, a subagent gets its model when it starts. The model is at medium effort or more, and never dearer than the chat that sent it or the **Subagents** ceiling in Settings. If the call asks for a model under the ceiling, that model runs. A dearer one is capped, and the Agent call says so (for example, "arne: Sonnet (capped from Opus)"). Forks, teammates and workflow agents are always left alone.
 
-## Bench vs effortless
+### Judges
 
-effortless's own `bench/agentic` tasks (MIT): four real coding tasks on effortless's source. They find a threshold, add JSDoc to one file without touching code, write and run a test-counting script, and explain the update flow. The app was on Opus · medium every time, set up three ways:
+| Backend | Where it runs |
+| --- | --- |
+| `haiku` (default) | Your Claude session |
+| `heuristic` | Locally, with no model call |
+| `laya` | A local `laya-serve` |
+| `jev` | TypeSafe's hosted judge. Your prompts leave your machine. You need a key from console.typesafe.ai/keys, set in /config (kept in secure storage) or in `TYPESAFE_API_KEY` |
 
-- **no mods:** no plugin loaded
-- **effortless:** effortless loaded
-- **arne:** arne loaded, with its log and settings paths pointed into the bench folder so the real log is never touched
+### Known limit
 
-Each setup ran 2 times per task, one after another, through `claude -p --setting-sources project`, which keeps user plugins and hooks out. Run it again with `bash bench/agentic/run.sh 2`, then `node bench/agentic/score.cjs`.
+Plugins can't move the desktop app's model menu. arne switches with the real `/model`, but the menu can keep showing your last pick. The band always shows the model that's actually running.
+
+## Bench
+
+These are effortless's own `bench/agentic` tasks (MIT): four real coding tasks on effortless's source. They find a threshold, add JSDoc without touching code, write and run a test-counting script, and explain an update flow. Every run started on Opus · medium. There were three setups, with 2 runs per task each, through `claude -p --setting-sources project`, which keeps user plugins out.
 
 | Setup | Runs | Correct | Correct, harness denials excluded | API-equivalent cost | Per task | Avg requests | Avg time |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -57,12 +97,17 @@ Each setup ran 2 times per task, one after another, through `claude -p --setting
 | effortless | 8 | 6 | 8 | $1.23 | $0.153 | 7.1 | 28 s |
 | arne | 8 | 6 | 7 | $0.80 | $0.100 | 7.9 | 29 s |
 
-arne costs 53% less per task than no mods and 35% less than effortless.
+[![arne bench: 53% cheaper per task](demo/poster.png)](demo/poster.png)
 
-**About the cost.** The runs used a logged-in Claude plan. The costs are `total_cost_usd` from each run, which is the list-price equivalent, not what the plan was billed.
+- **Cost** is `total_cost_usd` from each run, which is the list-price equivalent. It isn't what a Claude plan bills.
+- **Harness denials:** in 3 runs (effortless 2, arne 1), the session refused `node tools/count-tests.mjs` even though it was allowed. The agent wrote the script but couldn't run it.
+- **Where arne missed:** arne sent the JSDoc task to Haiku · low, and once Haiku skipped an export. Raising the floor for multi-edit tasks should fix it.
+- **Sample size:** 2 runs per setup is small. To run it yourself: `bash bench/agentic/run.sh 2`, then `node bench/agentic/score.cjs`.
 
-**Harness denials.** In 3 runs (effortless 2, arne 1), the session refused `node tools/count-tests.mjs` even though `Bash(node:*)` was allowed, so the agent wrote the script but couldn't run it. That's the bench harness, not the model.
+## Credits
 
-**Where arne missed.** Step 17's pass condition is "correct on everything", and arne missed it on one run. arne sent the JSDoc task (t2) to Haiku · low in both reps, and Haiku skipped one export once. Raising the floor for multi-edit tasks, or tuning Laya on these rows, should close it.
+arne replaces [effortless](bench/LICENSE.effortless) by HeyCubit (MIT), and reuses its cost formulas and bench tasks.
 
-**Fewer reps than planned.** The plan was 3 runs per setup. This bench ran 2 to save plan limits.
+## License
+
+MIT, see [LICENSE](LICENSE).
