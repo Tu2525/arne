@@ -288,7 +288,7 @@ const DEFAULTS: Live = {
   coldTokens: 30_000,
   heavyTokens: 150_000,
   continueAfterCompact: true,
-  subagents: 'auto',
+  subagents: 'off', // experimental: routing a subagent is opt-in
 }
 // 17y: Subagents was On/Off before it became a ceiling; On reads as Sonnet, Off as off. Auto is no ceiling (Opus).
 const subCeiling = (v: unknown) => (v === false || v === 'off' ? 'off' : v === 'auto' || TIER_OF[String(v)] ? String(v) : v === true ? 'sonnet' : 'auto')

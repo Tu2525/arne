@@ -675,6 +675,7 @@ test('a subagent gets its model at spawn: never dearer than the chat, effort at 
     spawned.push(e.model)
     return { model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }
   })
+  await $.config.set({ key: 'arne.subagents', value: 'auto' }) // off by default
   const spawn = (id: string, extra: object = {}) =>
     $.agent.spawn({ tool_use_id: id, prompt: 'look through the hooks and list every atom', description: 'list atoms', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra })
 
@@ -704,6 +705,7 @@ test('a long brief is no Opus subagent; a moved one is said on its call; Subagen
   on('ui.notice', (_$: unknown, e: { tool_use_id: string; text?: string }) => (notices.push(e), { value: undefined }))
   const got: any[] = []
   on('agent.spawn', (_$: unknown, e: any) => (got.push(e), { model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }))
+  await $.config.set({ key: 'arne.subagents', value: 'auto' }) // off by default
   const spawn = (id: string, extra: object = {}) =>
     $.agent.spawn({ tool_use_id: id, prompt: 'Design the plan: '.padEnd(5000, 'x'), description: 'a task', subagentType: 'general-purpose', parentModel: 'claude-sonnet-5-5', background: false, fork: false, ...extra })
 
@@ -1035,4 +1037,12 @@ test('the panel: the why sentence, then one footnote with the last turn\'s cost;
   const footer = (await band.find({ key: 'footer' })).children
   expect(footer[0].children.map((b: any) => b.props.label)).toEqual(['Settings', 'Stats', 'Handoff…'])
   expect(footer[1].props.label).toBe('Turn off')
+})
+
+test('subagents are left alone until the user turns routing on (experimental, off by default)', async ($: any, on: any) => {
+  engine(on)
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a search"}', isAnswered: true } }))
+  on('agent.spawn', (_$: unknown, e: any) => ({ model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }))
+  const r = await $.agent.spawn({ tool_use_id: 't1', prompt: 'list every atom', description: 'atoms', subagentType: 'Plan', parentModel: 'claude-opus-5-5', background: false, fork: false })
+  expect(r.model).toBe('claude-opus-5-5')
 })

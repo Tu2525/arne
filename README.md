@@ -21,7 +21,7 @@ Then disable effortless if you have it, and restart.
 
 The band above the prompt is the control: **● Auto** turns routing on or off (or resumes it after you pick a model yourself), the model and effort pickers pin a choice (Auto unpins), **why** shows the last decision with 👍/👎, **cache** shows what a cold cache will cost, and **⚙** opens the settings. The same settings live in `/config`.
 
-`/arne` covers the same ground from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `handoff`, `subagents auto|haiku|sonnet|opus|off`, `why`, `log`, `stats`, `backend haiku|heuristic|laya|jev`, `settings`. A pin belongs to its chat: a new chat starts on Auto.
+`/arne` covers the same ground from the prompt: `on`, `off`, `pin haiku|sonnet|opus [low|medium|high]`, `unpin`, `handoff`, `subagents auto|haiku|sonnet|opus|off` (experimental, off by default), `why`, `log`, `stats`, `backend haiku|heuristic|laya|jev`, `settings`. A pin belongs to its chat: a new chat starts on Auto.
 
 **Jev** is TypeSafe's hosted judge, off by default. Pick it and your prompts and the task card leave this machine. Set the key in /config (arne → TypeSafe API key, kept in secure storage, never in settings.json) or `TYPESAFE_API_KEY`, which wins when both are set; make one at console.typesafe.ai/keys. Without a key, Settings says so and Haiku judges. Stats counts Jev's calls in tokens, since its prices aren't published.
 
