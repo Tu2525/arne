@@ -199,7 +199,8 @@ test('the Judge row set to Laya sets backend laya, and says Laya runs here (17h)
   // The Laya segment's press calls this same set; the harness does not reach the pane's buttons.
   await $.config.set({ key: 'arne.backend', value: 'laya' })
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend laya')
-  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', props: {}, requestId: 'arne-settings', viewport: { columns: 80, rows: 30 } })
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 30 } })
+  await $.command.run({ command: 'arne', args: 'settings' })
   expect(await pane.find({ type: 'Text', text: /Laya runs on this machine through laya-serve/ })).toBeDefined()
 })
 
@@ -223,7 +224,9 @@ test('the band never prefixes "arne:", says off in words, and the settings pane 
   await $.command.run({ command: 'arne', args: 'off' })
   expect(await band.find({ type: 'Text', text: 'off' })).toBeDefined()
 
-  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', props: {}, requestId: 'arne-settings', viewport: { columns: 80, rows: 30 } })
+  await $.command.run({ command: 'arne', args: 'on' })
+  await $.command.run({ command: 'arne', args: 'settings' })
+  const pane = band
   for (const group of ['Routing', 'Range']) expect(await pane.find({ type: 'Text', text: group })).toBeDefined()
 })
 
@@ -297,7 +300,8 @@ test('on the desktop the resting line is styled Text and the chevron alone is th
 
 test('a narrow settings pane takes its width from bodyColumns and shows the short effort names (17m)', async ($: any, on: any) => {
   engine(on, 'claude-sonnet-5-5')
-  const pane = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'Pane', props: { bodyColumns: 40 }, requestId: 'arne-settings', viewport: { columns: 160, rows: 30 } })
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 40 }, viewport: { columns: 160, rows: 30 } })
+  await $.command.run({ command: 'arne', args: 'settings' })
   expect(await pane.find({ type: 'Button', text: 'XHi' })).toBeDefined()
   expect(await pane.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
 })
@@ -441,12 +445,12 @@ test('a finished turn logs its usage, and Stats and /arne stats show the estimat
   const usage = { model: 'claude-haiku-5-5', input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 0 }
   await $.turn.complete({ turnId: 's1', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, usage })
   expect([...disk.values()].join('')).toContain('"type":"usage"')
-  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'Pane', requestId: 'arne-stats', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 40 } })
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 40 } })
+  const text = (await $.command.run({ command: 'arne', args: 'stats' })).text
   expect(await pane.find({ type: 'Text', text: 'Saved $0.10' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: '83% less than $0.13' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: 'Haiku' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: /^An estimate/ })).toBeDefined()
-  const text = (await $.command.run({ command: 'arne', args: 'stats' })).text
   expect(text).toContain('estimate')
   expect(text).toContain('Today: $0.02 spent over 1 turns')
 })
@@ -717,4 +721,50 @@ test('a cold alert on the chat’s own tier offers a new chat, not a handoff (ba
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
   expect(await band.find({ type: 'Button', text: 'New chat on Opus' })).toBeDefined()
   expect(await band.find({ type: 'Button', text: /^Handoff to/ }).catch(() => undefined)).toBeUndefined()
+})
+
+// --- Settings and Stats in the band's panel: a Pane lost the first press of every button in the app ---
+
+const band100 = { plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 40 } } as const
+
+test('one press on each settings choice in the panel writes that setting', async ($: any, on: any) => {
+  const { s } = engine(on, 'claude-sonnet-5-5')
+  const band = await $.ui.mount(band100)
+  await band.press({ key: 'band' })
+  await band.press({ key: 'gear' })
+  // Auto last: off, the band draws only its off line.
+  for (const [key, value] of [['backend', 'heuristic'], ['subagents', 'false'], ['modelFloor', 'sonnet'], ['modelCeiling', 'sonnet'], ['effortFloor', 'medium'], ['effortCeiling', 'high'], ['auto', 'false']]) {
+    await band.press({ key: `${key}-${value}` })
+    expect(s.writes.at(-1)).toBe(`arne.${key}`)
+  }
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('arne off')
+  await $.command.run({ command: 'arne', args: 'on' })
+  await $.command.run({ command: 'arne', args: 'subagents on' })
+})
+
+test('Settings, then Stats, then Back twice is the main panel; closing the panel resets the view; /arne settings opens it', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', () => ({ value: '' })) // an empty decisions.jsonl: Stats has nothing yet
+  const band = await $.ui.mount(band100)
+  const at = async (text: string) => Boolean(await band.find({ type: 'Text', text }).catch(() => undefined))
+  await band.press({ key: 'band' })
+  await band.press({ key: 'gear' })
+  expect([await at('Routing'), await at('Model')]).toEqual([true, false])
+  await band.press({ key: 'open-stats' })
+  expect([await at('Stats'), await at('Routing')]).toEqual([true, false])
+  await band.press({ key: 'back' })
+  expect(await at('Routing')).toBe(true)
+  await band.press({ key: 'back' })
+  expect([await at('Model'), await at('Routing')]).toEqual([true, false])
+
+  await band.press({ key: 'gear' })
+  await band.press({ key: 'band' }) // closes
+  await band.press({ key: 'band' }) // opens on its main rows
+  expect([await at('Model'), await at('Routing')]).toEqual([true, false])
+
+  await band.press({ key: 'band' })
+  expect(await at('Model')).toBe(false)
+  await $.command.run({ command: 'arne', args: 'settings' })
+  expect(await at('Routing')).toBe(true)
 })

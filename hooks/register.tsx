@@ -84,6 +84,10 @@ type SubCount = Partial<Record<Tier | 'kept' | 'asked', number>>
 const countSpawn = ($: any, k: keyof SubCount) => update($, subCount, (c: SubCount | null) => ({ ...c, [k]: ((c ?? {})[k] ?? 0) + 1 }))
 // The Stats pane's three periods, parsed from the log once per open rather than on every press.
 const statsData = atom({ plugin: 'arne', key: 'stats' } as const, null)
+// What the band's panel shows: its main rows, Settings or Stats. In the app a Pane lost the first press
+// of every button, so Settings and Stats moved into the band, whose buttons answer at once.
+type View = 'main' | 'settings' | 'stats'
+const panelView = atom({ plugin: 'arne', key: 'panelView' } as const, 'main')
 const TIER_NAME_OF: Record<Tier, string> = { S: 'haiku', M: 'sonnet', L: 'opus' }
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
 
@@ -655,13 +659,153 @@ async function statsFor($: any, period: Period) {
   return summarize(parseUsage(text), periodStart(period, await $.clock.now()))
 }
 
-// The Stats pane reads all three periods from one parse at open, so a period press only redraws (17u).
-async function openStats($: any) {
-  const text: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
-  const rows = parseUsage(text)
-  const now: number = await $.clock.now()
-  await update($, statsData, () => Object.fromEntries(PERIODS.map(([p]) => [p, summarize(rows, periodStart(p, now))])))
-  await $.ui.open({ id: STATS, title: 'arne stats' })
+// Opens the band's panel on a view. Stats reads all three periods from one parse here, so a period
+// press only redraws (17u).
+async function openView($: any, view: View) {
+  if (view === 'stats') {
+    const text: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
+    const rows = parseUsage(text)
+    const now: number = await $.clock.now()
+    await update($, statsData, () => Object.fromEntries(PERIODS.map(([p]) => [p, summarize(rows, periodStart(p, now))])))
+  }
+  await update($, panelView, () => view)
+  await update($, whyOpen, () => true)
+}
+
+// The panel's Settings view: a label and a segmented control per row. A press shows the new value at
+// once, then writes it through $.config.set (setOption), so the panel and /config never disagree.
+function settingsView($: any, { Box, Button, Text }: any, narrow: boolean, gui: boolean) {
+  const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
+    const set = (value: unknown) => setOption($, key, value)
+    return (
+      <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
+        <Text>{label}</Text>
+        <Box flexDirection="row" flexWrap="wrap" flexGrow={1} justifyContent="flex-end" columnGap={1}>
+          {options.map(o =>
+            o.value === live[key] ? (
+              <Button key={`${key}-${String(o.value)}`} variant="secondary" label={o.label} onPress={() => set(o.value)} />
+            ) : (
+              <Button key={`${key}-${String(o.value)}`} plain label={o.label} onPress={() => set(o.value)} />
+            ),
+          )}
+        </Box>
+      </Box>
+    )
+  }
+  const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
+  // Narrow, as in the band: the short effort names, and a row's segments drop under its label.
+  const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: (narrow ? EFFORT_LABEL_SHORT : EFFORT_LABEL)[v] }))
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
+        <Text bold>Settings</Text>
+        <Button key="back" plain label="Back" onPress={() => update($, panelView, () => 'main')} />
+      </Box>
+      {/* Each group: a caption over a bordered card of rows, as in the design's inset lists. */}
+      <Box flexDirection="column">
+        <Text color="subtle">Routing</Text>
+        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+          {choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
+          {choice('Judge', 'backend', [
+            { value: 'heuristic', label: 'Rules only' },
+            { value: 'haiku', label: 'Haiku' },
+            { value: 'laya', label: 'Laya' },
+          ])}
+          {choice('Subagents', 'subagents', [{ value: true, label: 'Route' }, { value: false, label: 'Leave' }])}
+        </Box>
+        {live.backend === 'laya' && <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>}
+      </Box>
+      <Box flexDirection="column">
+        <Text color="subtle">Range</Text>
+        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+          {choice('Cheapest model', 'modelFloor', MODELS)}
+          {choice('Strongest model', 'modelCeiling', MODELS)}
+          {choice('Lowest effort', 'effortFloor', EFFORTS)}
+          {choice('Highest effort', 'effortCeiling', EFFORTS)}
+        </Box>
+      </Box>
+      <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
+        <Text color="inactive">Also in /config.</Text>
+        <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />
+      </Box>
+    </Box>
+  )
+}
+
+// The panel's Stats view (17q): what arne saved against running every turn on Opus or Sonnet at medium.
+// An estimate, said so. Back returns to Settings.
+async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: boolean) {
+  const period = (await read($, statsPeriod)) as Period
+  // Parsed once at open (openView); a panel drawn without that open (a reload) parses here.
+  const st = (await read($, statsData))?.[period] ?? (await statsFor($, period))
+  const usd = (v: number) => `$${v.toFixed(2)}`
+  // Bars as text, so they follow the theme: one accent for arne, subtle for the baselines.
+  const room = Math.max(10, Math.min(40, cols - 24))
+  const max = Math.max(st.spent, st.sonnet, st.opus, 1e-9)
+  const bar = (v: number) => '█'.repeat(Math.max(v > 0 ? 1 : 0, Math.round((v / max) * room)))
+  const tile = (name: string, base: number) => {
+    const t = savedText(st.spent, base)
+    return (
+      <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1} flexGrow={1}>
+        <Text color="subtle">{`Against ${name}`}</Text>
+        <Text bold>{t.headline}</Text>
+        <Text color="subtle">{t.sub}</Text>
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
+        <Text bold>Stats</Text>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+          {PERIODS.map(([p, label]) =>
+            p === period ? (
+              <Button key={`period-${p}`} variant="secondary" label={label} onPress={() => update($, statsPeriod, () => p)} />
+            ) : (
+              <Button key={`period-${p}`} plain label={label} onPress={() => update($, statsPeriod, () => p)} />
+            ),
+          )}
+          <Button key="back" plain label="Back" onPress={() => update($, panelView, () => 'settings')} />
+        </Box>
+      </Box>
+      {st.turns === 0 && st.lines.length === 0 ? (
+        <Text color="subtle">No turns with usage in this period yet.</Text>
+      ) : (
+        <Box flexDirection="column" gap={1}>
+          <Box flexDirection={cols < 60 ? 'column' : 'row'} gap={1}>
+            {tile('Opus · medium', st.opus)}
+            {tile('Sonnet · medium', st.sonnet)}
+          </Box>
+          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+            {([['With arne', st.spent, 'claude'], ['Sonnet · medium', st.sonnet, 'subtle'], ['Opus · medium', st.opus, 'subtle']] as const).map(([label, v, color]) => (
+              <Box key={`bar-${label}`} flexDirection="column">
+                <Box flexDirection="row" justifyContent="space-between">
+                  <Text color={label === 'With arne' ? undefined : 'subtle'}>{label}</Text>
+                  <Text>{usd(v)}</Text>
+                </Box>
+                <Text color={color}>{bar(v)}</Text>
+              </Box>
+            ))}
+          </Box>
+          <Box flexDirection="column">
+            <Text color="subtle">Where it went</Text>
+            <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+              {st.lines.map(l => (
+                <Box key={`line-${l.label}`} flexDirection="row" columnGap={2}>
+                  <Box flexGrow={1}>
+                    <Text>{l.label}</Text>
+                  </Box>
+                  <Text color="subtle">{l.label === 'Switches and summaries' ? String(l.count) : `${l.count} turn${l.count === 1 ? '' : 's'}`}</Text>
+                  <Text>{usd(l.cost)}</Text>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        </Box>
+      )}
+      <Text color="subtle">An estimate: each turn's real tokens, priced again as if every turn ran on Opus at medium effort, or on Sonnet at medium effort. Model switches and summaries count against arne.</Text>
+    </Box>
+  )
 }
 
 // Drives the band's countdown while the cache is warm. A reload cancels every timer and session.start does
@@ -848,8 +992,8 @@ export const register: Register = (on, options) => {
         await setAuto($, false)
         return { text: live.auto ? 'arne stays on: the setting was refused.' : 'arne off. Requests use the session model.' }
       case 'settings':
-        await $.ui.open({ id: SETTINGS, title: 'arne settings' })
-        return { text: 'arne settings opened. Changes here match /config.' }
+        await openView($, 'settings')
+        return { text: 'arne settings are open in the band above the prompt. Changes there match /config.' }
       case 'pin': {
         const tier = TIER_OF[rest[0]]
         if (!tier) return { text: 'Usage: /arne pin haiku|sonnet|opus [low|medium|high|xhigh|max]' }
@@ -882,6 +1026,7 @@ export const register: Register = (on, options) => {
             return `${label}: $${st.spent.toFixed(2)} spent over ${st.turns} turns. Against Opus · medium: ${opus.headline.toLowerCase()} (${opus.sub}). Against Sonnet · medium: ${savedText(st.spent, st.sonnet).headline.toLowerCase()}.`
           }),
         )
+        await openView($, 'stats')
         return { text: `arne stats (an estimate: each turn's real tokens, priced again on Opus or Sonnet):\n${lines.join('\n')}` }
       }
       case 'subagents': {
@@ -1134,9 +1279,12 @@ export const register: Register = (on, options) => {
     // Model and effort words keep a fixed width, so nothing moves sideways between turns.
     const open = whyIsOpen // the whyOpen atom now holds "panel open"
     // Closing the panel also clears the handoff note.
+    const view = (await read($, panelView)) as View
     const toggle = async () => {
       // The Laya line shows on the first open of a chat only: closing the panel marks it seen (4).
       if (open) await update($, layaHinted, () => true)
+      // Closing the panel returns it to its main rows.
+      if (open) await update($, panelView, () => 'main')
       await update($, whyOpen, o => !o)
       await update($, handedOff, () => null)
     }
@@ -1355,7 +1503,17 @@ export const register: Register = (on, options) => {
               {picker && running && tierOf(picker) !== tierOf(running) && (
                 <Text color="warning" wrap="truncate-end">{`⇄ The app's model menu shows ${shortModel(picker)}; arne runs ${shortModel(running)}. Plugins can't change that menu.`}</Text>
               )}
-              {open && (
+              {open && view === 'settings' && (
+                <Box flexDirection="column" marginTop={1}>
+                  {settingsView($, { Box, Button, Text }, narrow, gui)}
+                </Box>
+              )}
+              {open && view === 'stats' && (
+                <Box flexDirection="column" marginTop={1}>
+                  {await statsView($, { Box, Button, Text }, cols, gui)}
+                </Box>
+              )}
+              {open && view === 'main' && (
                 <Box flexDirection="column" gap={1} marginTop={1}>
                   {/* Each row: a fixed-width label, the segments as one group that never splits, then the note. */}
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
@@ -1437,7 +1595,7 @@ export const register: Register = (on, options) => {
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Box flexDirection="row" flexWrap="wrap" gap={2}>
                       <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
-                      <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
+                      <Button key="gear" plain label="Settings" onPress={() => update($, panelView, () => 'settings')} />
                       {/* While the costs table shows, its handoff row is the one Handoff (3). */}
                       {costs.length === 0 && (busy ?? <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />)}
                       {menuOpen &&
@@ -1458,149 +1616,13 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The settings pane: a label and a segmented control per row. A press shows the new value at once, then
-  // writes it through $.config.set (setOption), so the pane and /config never disagree.
-  on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
-    await read($, liveRev) // subscribes: the rows read `live`
-    const { Box, Button, Text } = $.ui.resolve(e)
-    // Narrow, as in the band: the short effort names, and a row's segments drop under its label.
-    const narrow = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80) < 72
-    const gui = e.surface !== 'terminal'
-    const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
-      const set = (value: unknown) => setOption($, key, value)
-      return (
-        <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
-          <Text>{label}</Text>
-          <Box flexDirection="row" flexWrap="wrap" flexGrow={1} justifyContent="flex-end" columnGap={1}>
-            {options.map(o =>
-              o.value === live[key] ? (
-                <Button key={`${key}-${String(o.value)}`} variant="secondary" label={o.label} onPress={() => set(o.value)} />
-              ) : (
-                <Button key={`${key}-${String(o.value)}`} plain label={o.label} onPress={() => set(o.value)} />
-              ),
-            )}
-          </Box>
-        </Box>
-      )
-    }
-    const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
-    const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: (narrow ? EFFORT_LABEL_SHORT : EFFORT_LABEL)[v] }))
-    return (
-      <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
-          <Text bold>arne settings</Text>
-          <Button role="dismiss" plain label="Done" onPress={() => undefined} />
-        </Box>
-        {/* Each group: a caption over a bordered card of rows, as in the design's inset lists. */}
-        <Box flexDirection="column">
-          <Text color="subtle">Routing</Text>
-          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
-            {choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
-            {choice('Judge', 'backend', [
-              { value: 'heuristic', label: 'Rules only' },
-              { value: 'haiku', label: 'Haiku' },
-              { value: 'laya', label: 'Laya' },
-            ])}
-            {choice('Subagents', 'subagents', [{ value: true, label: 'Route' }, { value: false, label: 'Leave' }])}
-          </Box>
-          {live.backend === 'laya' && (
-            <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>
-          )}
-        </Box>
-        <Box flexDirection="column">
-          <Text color="subtle">Range</Text>
-          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
-            {choice('Cheapest model', 'modelFloor', MODELS)}
-            {choice('Strongest model', 'modelCeiling', MODELS)}
-            {choice('Lowest effort', 'effortFloor', EFFORTS)}
-            {choice('Highest effort', 'effortCeiling', EFFORTS)}
-          </Box>
-        </Box>
-        <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
-          <Text color="inactive">Also in /config.</Text>
-          <Button key="open-stats" plain label="Stats" onPress={() => openStats($)} />
-        </Box>
-      </Box>
-    )
-  })
-
-  // Stats (17q): what arne saved against running every turn on Opus or Sonnet at medium. An estimate, said so.
-  on('ui.render', { component: 'Pane', requestId: STATS }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const cols = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80)
-    const gui = e.surface !== 'terminal'
-    const period = (await read($, statsPeriod)) as Period
-    // Parsed once at open (openStats); a pane drawn without that open (a restore) parses here.
-    const st = (await read($, statsData))?.[period] ?? (await statsFor($, period))
-    const usd = (v: number) => `$${v.toFixed(2)}`
-    // Bars as text, so they follow the theme: one accent for arne, subtle for the baselines.
-    const room = Math.max(10, Math.min(40, cols - 24))
-    const max = Math.max(st.spent, st.sonnet, st.opus, 1e-9)
-    const bar = (v: number) => '█'.repeat(Math.max(v > 0 ? 1 : 0, Math.round((v / max) * room)))
-    const tile = (name: string, base: number) => {
-      const t = savedText(st.spent, base)
-      return (
-        <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1} flexGrow={1}>
-          <Text color="subtle">{`Against ${name}`}</Text>
-          <Text bold>{t.headline}</Text>
-          <Text color="subtle">{t.sub}</Text>
-        </Box>
-      )
-    }
-    return (
-      <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
-          <Text bold>Stats</Text>
-          <Box flexDirection="row" columnGap={1}>
-            {PERIODS.map(([p, label]) =>
-              p === period ? (
-                <Button key={`period-${p}`} variant="secondary" label={label} onPress={() => update($, statsPeriod, () => p)} />
-              ) : (
-                <Button key={`period-${p}`} plain label={label} onPress={() => update($, statsPeriod, () => p)} />
-              ),
-            )}
-            <Button role="dismiss" plain label="Done" onPress={() => undefined} />
-          </Box>
-        </Box>
-        {st.turns === 0 && st.lines.length === 0 ? (
-          <Text color="subtle">No turns with usage in this period yet.</Text>
-        ) : (
-          <Box flexDirection="column" gap={1}>
-            <Box flexDirection={cols < 60 ? 'column' : 'row'} gap={1}>
-              {tile('Opus · medium', st.opus)}
-              {tile('Sonnet · medium', st.sonnet)}
-            </Box>
-            <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
-              {([['With arne', st.spent, 'claude'], ['Sonnet · medium', st.sonnet, 'subtle'], ['Opus · medium', st.opus, 'subtle']] as const).map(([label, v, color]) => (
-                <Box key={`bar-${label}`} flexDirection="column">
-                  <Box flexDirection="row" justifyContent="space-between">
-                    <Text color={label === 'With arne' ? undefined : 'subtle'}>{label}</Text>
-                    <Text>{usd(v)}</Text>
-                  </Box>
-                  <Text color={color}>{bar(v)}</Text>
-                </Box>
-              ))}
-            </Box>
-            <Box flexDirection="column">
-              <Text color="subtle">Where it went</Text>
-              <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
-                {st.lines.map(l => (
-                  <Box key={`line-${l.label}`} flexDirection="row" columnGap={2}>
-                    <Box flexGrow={1}>
-                      <Text>{l.label}</Text>
-                    </Box>
-                    <Text color="subtle">{l.label === 'Switches and summaries' ? String(l.count) : `${l.count} turn${l.count === 1 ? '' : 's'}`}</Text>
-                    <Text>{usd(l.cost)}</Text>
-                  </Box>
-                ))}
-              </Box>
-            </Box>
-          </Box>
-        )}
-        <Text color="subtle">An estimate: each turn's real tokens, priced again as if every turn ran on Opus at medium effort, or on Sonnet at medium effort. Model switches and summaries count against arne.</Text>
-      </Box>
-    )
-  })
+  // Settings and Stats live in the band's panel now. A pane restored from an older session points there.
+  for (const id of [SETTINGS, STATS]) {
+    on('ui.render', { component: 'Pane', requestId: id }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text color="subtle">arne's settings and stats are in the band above the prompt: open it, then Settings.</Text>
+    })
+  }
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
