@@ -1,2 +1,4 @@
 node_modules/
 tsconfig.json
+brag-output/
+.canvas-tmp/

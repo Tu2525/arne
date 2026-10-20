@@ -4,6 +4,8 @@ A Claude Code plugin that sends each prompt and each subagent run to the cheapes
 
 arne replaces effortless by HeyCubit (MIT). Its cost ratios and the bench below come from effortless. Turn effortless off while arne is on.
 
+[![arne demo: 21 seconds](demo/arne.jpg)](demo/arne.mp4)
+
 ## Install
 
 ```
@@ -23,11 +25,11 @@ The band above the prompt is the control: **● Auto** turns routing on or off (
 
 **Stats** (the band's panel → Settings → Stats, or `/arne stats`) shows what arne saved today, over 7 days and in all. It is an estimate, never an exact figure: each turn's real tokens are priced again as if the turn ran on Opus or Sonnet at medium effort. A different model would have written a different answer, so the real difference can't be known. Model switches and summaries count against arne, and turns logged before Stats existed are skipped.
 
-**Handoff** (the band's panel, the cold and heavy alerts, or `/arne handoff [haiku|sonnet|opus]`) has Haiku summarize the chat into `arne-handoff.md` and the clipboard, runs `/clear`, moves to the tier you picked and sends the summary as the new chat's first message. The old chat stays in history; plugins can't archive a chat, so archiving it from the sidebar is your click. When a cheaper model fits but switching on a warm cache costs more than it saves, the panel prices staying, switching and a handoff side by side.
+**Handoff** (the band's panel, the cold and heavy alerts, or `/arne handoff [haiku|sonnet|opus]`) has Haiku summarize the chat into `arne-handoff.md` and the clipboard, runs `/clear`, moves to the tier you picked and sends the summary as the new chat's first message. The old chat stays in history; plugins can't archive a chat, so archiving it from the sidebar is your click. When a cheaper model fits but switching on a warm cache costs more than it saves, the panel prices staying, switching and a handoff side by side. In a chat past the cold-offer size (30k tokens by default) the main panel also shows one line per cheaper tier: what a handoff costs now and how many turns until it breaks even.
 
 **Subagents** get their model when they start, at medium effort or more, never dearer than the chat that sent them or the **Subagents** ceiling in Settings (`Auto · Haiku · Sonnet · Opus · Off`, default Auto, which is no ceiling; also `/arne subagents auto|haiku|sonnet|opus|off`). A model the call asked for ("use haiku to write this") runs as asked when it is at or under the ceiling; a dearer one runs on the ceiling, and the Agent call says "arne: Sonnet (capped from Opus)". Forks, teammates and workflow agents are left alone, and Off leaves every subagent alone. When arne moves one, it says so on the Agent call, and the band's panel counts this chat's subagents.
 
-**Plugins can't move the app's model menu.** arne switches with the real `/model`, but the desktop app's model menu keeps showing your last pick there; the band says so when they differ.
+**Plugins can't move the app's model menu.** arne switches with the real `/model`, but the desktop app's model menu can keep showing your last pick; the band is the model that actually runs.
 
 ## Credits
 
