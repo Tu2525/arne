@@ -50,8 +50,14 @@ const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
 const thanked = atom({ plugin: 'arne', key: 'thanked' } as const, null as string | null)
 // True while Laya is the judge but laya-serve is not answering; the why line then says Haiku judged.
 const layaDown = atom({ plugin: 'arne', key: 'layaDown' } as const, false)
-// True while Jev is the judge but TYPESAFE_API_KEY is not set (17s); the why line then says Haiku judged.
+// True while Jev is the judge but no TypeSafe key is found (17s); the why line then says Haiku judged.
 const jevNoKey = atom({ plugin: 'arne', key: 'jevNoKey' } as const, false)
+// The typesafe_key option (sensitive: secure storage, never settings.json). Kept here only, never in an atom,
+// a log row or on screen.
+let optionKey = ''
+// The TypeSafe key: TYPESAFE_API_KEY first, then the option.
+const typesafeKey = async ($: any): Promise<string | undefined> => (await Promise.resolve($.env.get('TYPESAFE_API_KEY')).catch(() => undefined)) || optionKey || undefined
+const ADD_KEY_HINT = 'Set it in /config → arne → TypeSafe API key, or the TYPESAFE_API_KEY environment variable.'
 // What the desktop app's model picker shows: the session's first model, then each pick made in it
 // (PostModelSwitch source "sdk"). Plugins cannot move that picker, so arne's /model can differ from it.
 const appPicker = atom({ plugin: 'arne', key: 'appPicker' } as const, null)
@@ -554,8 +560,8 @@ function backendsOf($: any, backend: string, card = ''): Backend[] {
   const jev: Backend = {
     name: 'jev',
     ask: async text => {
-      // From the environment only: never stored, logged or shown. No key, no request.
-      const key = await $.env.get('TYPESAFE_API_KEY')
+      // Never stored, logged or shown. No key, no request.
+      const key = await typesafeKey($)
       if (!key) return undefined
       const j = await systemOne(JEV_URL, { authorization: `Bearer ${key}` }, text, JEV_MODEL)
       // Jev's prices are not published, so Stats counts its tokens on a row of their own.
@@ -577,7 +583,7 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
   }
   // The band says so when Laya was picked but is not answering: the chain judges with Haiku instead.
   await update($, layaDown, () => s.backend === 'laya' && !layaUp)
-  const jevKeyless = s.backend === 'jev' && !(await $.env.get('TYPESAFE_API_KEY'))
+  const jevKeyless = s.backend === 'jev' && !(await typesafeKey($))
   await update($, jevNoKey, () => jevKeyless)
   // Any pin pins both parts and skips routing (17p): the part it leaves out stays what the session has now.
   // A pin is the person's own pick, so it skips the floor and ceiling (how xhigh, max or a capped tier are reached).
@@ -702,7 +708,7 @@ function viewHead($: any, { Box, Button, Text }: any, title: string) {
 
 // The panel's Settings view: a label and a segmented control per row. A press shows the new value at
 // once, then writes it through $.config.set (setOption), so the panel and /config never disagree.
-function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: number) {
+function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: number, needsKey = false) {
   const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
     const set = (value: unknown) => setOption($, key, value)
     return (
@@ -721,12 +727,13 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
     )
   }
   // Each group: a caption over a bordered card of rows, as in the design's inset lists.
-  const card = (title: string, rows: unknown[]) => (
+  const card = (title: string, rows: unknown[], note?: unknown) => (
     <Box key={`card-${title}`} flexDirection="column" flexGrow={1}>
       <Text size="footnote" dimColor>{title}</Text>
       <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
         {rows as any}
       </Box>
+      {note as any}
     </Box>
   )
   const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
@@ -751,7 +758,13 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
             { value: 'sonnet', label: 'Sonnet' },
             { value: 'opus', label: 'Opus' },
           ]),
-        ])}
+        ], needsKey && (
+          // No masked Input exists, so the key is never typed here: the button points to /config's secure field.
+          <Box key="jev-key" flexDirection="row" columnGap={2}>
+            <Text size="footnote" dimColor>Jev needs a TypeSafe key.</Text>
+            <Button key="add-key" plain label="Add key…" onPress={() => $.ui.toast(ADD_KEY_HINT)} />
+          </Box>
+        ))}
         {card('Limits', [
           choice('Cheapest model', 'modelFloor', MODELS),
           choice('Strongest model', 'modelCeiling', MODELS),
@@ -762,7 +775,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
       <Box key="settings-notes" flexDirection="column">
         {/* One note about the judges, so the view stays inside the band's height cap: Jev's while it is the judge. */}
         <Text size="footnote" dimColor>
-          {live.backend === 'jev' ? 'Jev is hosted: prompts leave this machine (needs TYPESAFE_API_KEY).' : 'Laya runs on this machine and learns from your ratings.'}
+          {live.backend === 'jev' ? 'Jev is hosted: your prompts leave this machine.' : 'Laya runs on this machine and learns from your ratings.'}
         </Text>
         <Text size="footnote" dimColor>Also in /config.</Text>
       </Box>
@@ -891,6 +904,7 @@ async function cacheTouched($: any, model: string, usage: unknown) {
 export const register: Register = (on, options) => {
   live = { ...DEFAULTS, ...(options as Partial<Live>) }
   live.subagents = subCeiling(live.subagents)
+  optionKey = String((options as Record<string, unknown>).typesafe_key ?? '')
 
   // A write to an arne.* row from /config or another plugin lands here. arne's own writes never do: the
   // app skips a plugin's own hooks, and ownWrites makes the test kit skip them the same way (17u).
@@ -900,6 +914,10 @@ export const register: Register = (on, options) => {
     // `arne.<field>`, or `arne@<marketplace>.<field>` while another arne is enabled too.
     const field = /^arne(@[^.]+)?\./.test(e.key) ? (e.key.slice(e.key.indexOf('.') + 1) as keyof Live) : undefined
     if (field && FIELDS.includes(field) && !('deny' in r)) await applyLive($, field, r.value)
+    if ((field as string) === 'typesafe_key' && !('deny' in r)) {
+      optionKey = String(r.value ?? '')
+      await update($, liveRev, n => n + 1)
+    }
     return r
   }).catch(($, e, next) => next(e))
 
@@ -1060,7 +1078,7 @@ export const register: Register = (on, options) => {
         }
         if (b === 'jev') {
           return {
-            text: 'arne backend: jev. Jev is TypeSafe’s hosted judge: your prompts and the task card leave this machine. It needs TYPESAFE_API_KEY in the environment (keys at console.typesafe.ai/keys); until then, turns fall back to haiku.',
+            text: 'arne backend: jev. Jev is TypeSafe’s hosted judge: your prompts and the task card leave this machine. Set the key in /config (arne → TypeSafe API key) or TYPESAFE_API_KEY; keys are at console.typesafe.ai/keys. Until then, turns fall back to haiku.',
           }
         }
         return { text: `arne backend: ${b}.` }
@@ -1447,7 +1465,7 @@ export const register: Register = (on, options) => {
     const why = judgeDown
       ? 'Laya is not answering, so Haiku judged.'
       : jevKeyless
-        ? 'Jev needs TYPESAFE_API_KEY, Haiku judged.'
+        ? 'Jev needs a key; Haiku judged'
         : !l
         ? 'No decision yet.'
         : pinned
@@ -1576,7 +1594,7 @@ export const register: Register = (on, options) => {
               )}
               {open && view === 'settings' && (
                 <Box flexDirection="column" marginTop={1}>
-                  {settingsView($, { Box, Button, Text }, gui, cols)}
+                  {settingsView($, { Box, Button, Text }, gui, cols, live.backend === 'jev' && !(await typesafeKey($)))}
                 </Box>
               )}
               {open && view === 'stats' && (

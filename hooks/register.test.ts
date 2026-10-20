@@ -205,7 +205,7 @@ test('the Judge row set to Laya sets backend laya, and Settings says what Laya i
   // The Jev note takes the Laya note's place while Jev is the judge.
   expect(await pane.find({ type: 'Text', text: /^Jev is hosted/ }).catch(() => undefined)).toBeUndefined()
   await $.config.set({ key: 'arne.backend', value: 'jev' })
-  expect(await pane.find({ type: 'Text', text: 'Jev is hosted: prompts leave this machine (needs TYPESAFE_API_KEY).' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Jev is hosted: your prompts leave this machine.' })).toBeDefined()
 })
 
 test('a pin from the band or /arne pin moves /model at once, before any prompt (17f)', async ($: any, on: any) => {
@@ -575,7 +575,57 @@ test('Jev with no TYPESAFE_API_KEY makes no request: Haiku judges, and the why l
   expect(judged).toBe(1)
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 30 } })
   await $.ui.press({ plugin: 'arne', key: 'band' })
-  expect(await pane.find({ type: 'Text', text: /Jev needs TYPESAFE_API_KEY, Haiku judged/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^Jev needs a key; Haiku judged$/ })).toBeDefined()
+})
+
+// Jev with a key: the request it makes, and every log write, for the key-handling tests (17s).
+function jevHarness(on: any, env: Record<string, string>) {
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'HOME' ? '/home/t' : env[e.name] }))
+  const fetched: any[] = []
+  const sample = { model: 'jev-latest', answers: { tier: { type: 'choice', choice: 'M', confidence: 0.8, probabilities: { S: 0.1, M: 0.7, L: 0.2 } }, effort: { type: 'score', score: 0.67, confidence: 0.67, probabilities: { '0': 0.33, '1': 0.67, '2': 0 } } }, usage: { input_tokens: 120, output_tokens: 12 } }
+  on('http.fetch', (_$: unknown, e: any) => (fetched.push(e), { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(sample) } }))
+  const disk = new Map<string, string>()
+  on('fs.read', (_$: unknown, e: { path: string }) => ({ value: disk.get(e.path) ?? '' }))
+  on('fs.write', (_$: unknown, e: { path: string; text: string }) => (disk.set(e.path, e.text), { value: undefined }))
+  return { fetched, disk }
+}
+
+test('a TypeSafe key in /config, with no env, makes the request with Bearer, and no log row carries it (17s)', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  const { fetched, disk } = jevHarness(on, {})
+  await $.command.run({ command: 'arne', args: 'backend jev' })
+  await $.config.set({ key: 'arne.typesafe_key', value: 'ts-option-key' })
+  await $.prompt.submit(typed('tidy up the helpers in this module'))
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(fetched.length).toBe(1)
+  expect(fetched[0].init.headers.authorization).toBe('Bearer ts-option-key')
+  const log = [...disk.values()].join(String.fromCharCode(10))
+  expect(log).toContain('"kind":"jev"')
+  expect(log).not.toContain('ts-option-key')
+})
+
+test('TYPESAFE_API_KEY wins over the /config key (17s)', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  const { fetched } = jevHarness(on, { TYPESAFE_API_KEY: 'ts-env-key' })
+  await $.command.run({ command: 'arne', args: 'backend jev' })
+  await $.config.set({ key: 'arne.typesafe_key', value: 'ts-option-key' })
+  await $.prompt.submit(typed('tidy up the helpers in this module'))
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(fetched[0].init.headers.authorization).toBe('Bearer ts-env-key')
+})
+
+test('Jev with no key anywhere: Settings says so under Routing with Add key…, which points to /config (17s)', async ($: any, on: any) => {
+  const { s } = engine(on, 'claude-sonnet-5-5')
+  jevHarness(on, {})
+  await $.command.run({ command: 'arne', args: 'backend jev' })
+  const band = await $.ui.mount(band100)
+  await $.command.run({ command: 'arne', args: 'settings' })
+  expect(await band.find({ type: 'Text', text: 'Jev needs a TypeSafe key.' })).toBeDefined()
+  await band.press({ key: 'add-key' })
+  expect(s.toasts.at(-1)).toBe('Set it in /config → arne → TypeSafe API key, or the TYPESAFE_API_KEY environment variable.')
+  // A key in /config takes the line away.
+  await $.config.set({ key: 'arne.typesafe_key', value: 'ts-option-key' })
+  expect(await band.find({ key: 'add-key' }).catch(() => undefined)).toBeUndefined()
 })
 
 test('the first prompt after a compact is sent, not held, even past the TTL (17v)', async ($: any, on: any) => {
