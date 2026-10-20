@@ -292,16 +292,56 @@ test('a narrow settings pane takes its width from bodyColumns and shows the shor
   expect(await pane.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
 })
 
-test('Handoff sits beside Summarize and runs the compact that saves and copies the summary (17o)', async ($: any, on: any) => {
-  const { s, clock } = engine(on, 'claude-sonnet-5-5')
-  s.usage = { input_tokens: 160_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
-  for await (const _ of $.turn.step({ turnId: 'ho1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+// A warm 150k Opus chat where the judge wants Sonnet: switching would re-read the chat cold, so it is sticky (17w).
+async function stickyOpus($: any, on: any) {
+  const e = engine(on)
+  const disk = new Map<string, string>()
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', (_$: unknown, x: { path: string }) => ({ value: disk.get(x.path) ?? '' }))
+  on('fs.write', (_$: unknown, x: { path: string; text: string }) => (disk.set(x.path, x.text), { value: undefined }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'build the parser', toolUses: [] }, { role: 'assistant', text: 'done', toolUses: [] }] }))
+  on('model.complete', (_$: unknown, x: { system: string }) =>
+    x.system.startsWith('Summarize')
+      ? { value: { text: 'GOAL: the parser', isAnswered: true } }
+      : { value: { text: '{"tier":"M","effort":"medium","reason":"x"}', isAnswered: true } },
+  )
+  on('turn.start', (_$: unknown, x: { turnId: string }) => ({ turnId: x.turnId }))
+  e.s.usage = { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 'w0', index: 0, model: e.s.model, effort: 'high', messageCount: 1 })) {
     // drain
   }
-  await clock.advance(2 * 60 * 60_000)
-  await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
-  await $.ui.press({ plugin: 'arne', key: 'handoff' })
-  expect(s.ran).toContain('/compact ')
+  await $.prompt.submit(typed('refactor the parser'))
+  for (let i = 0; i < 3; i++) await e.clock.settle()
+  await $.turn.start({ text: 'refactor the parser', turnId: 'w1' })
+  return { ...e, disk }
+}
+
+test('a sticky cheaper pick shows stay, switch and handoff with their costs; one handoff on a double press (17w)', async ($: any, on: any) => {
+  const { s, clock, disk } = await stickyOpus($, on)
+  expect(s.model).toBe('claude-opus-5-5')
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 120 }, viewport: { columns: 120, rows: 40 } })
+  await band.press({ key: 'band' })
+  expect(await band.find({ type: 'Text', text: 'Stay on Opus' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'Switch to Sonnet in this chat' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /pays off after \d+ turn/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'best' })).toBeDefined()
+  await Promise.all([band.press({ key: 'handoff-row' }).catch(() => undefined), band.press({ key: 'handoff-row' }).catch(() => undefined)])
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(s.ran.filter(r => r.startsWith('/clear')).length).toBe(1)
+  expect(s.model).toBe('claude-sonnet-5-5')
+  expect(s.entered.at(-1)).toContain('GOAL: the parser')
+  expect([...disk.values()].join('')).toContain('GOAL: the parser')
+  expect(s.toasts.at(-1)).toContain('Old chat saved in history')
+})
+
+test('/arne handoff haiku runs the summary, /clear, /model haiku and sends the summary (17w)', async ($: any, on: any) => {
+  const { s, clock } = await stickyOpus($, on)
+  await $.command.run({ command: 'arne', args: 'handoff haiku' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(s.ran.filter(r => r.startsWith('/clear')).length).toBe(1)
+  expect(s.model).toBe('claude-haiku-5-5')
+  expect(s.entered.at(-1)).toContain('GOAL: the parser')
+  expect((await $.command.run({ command: 'arne', args: 'handoff gpt' })).text).toContain('Usage')
 })
 
 test('an Auto pick says so on the band: auto, the model, routed; a pin does not', async ($: any, on: any) => {

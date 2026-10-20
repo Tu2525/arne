@@ -44,11 +44,21 @@ export function coldAdvice(
       .filter(t => t !== m && PRICE[t] < PRICE[m])
       .map(t => ({ action: 'switch' as const, to: t, first: costSwitch(C, t, warm(t)), after: C * PRICE[t] * READ })),
     { action: 'compact', first: costCompact(C, S, m), after: S * PRICE[m] * READ },
-    { action: 'handoff', first: costCompact(C, S + doc, m), after: (S + doc) * PRICE[m] * READ },
+    // One per tier: Haiku reads the chat, and the new chat on `t` starts from the summary and the doc, cold.
+    ...(['S', 'M', 'L'] as Tier[]).map(t => ({ action: 'handoff' as const, to: t, first: costCompact(C, S + doc, t), after: (S + doc) * PRICE[t] * READ })),
   ]
   rows.sort((a, b) => a.first - b.first)
   return { best: rows[0], rows }
 }
+
+/** The fewest later turns after which `row` has cost less than staying, or undefined past `max`. */
+export function paysOffAfter(row: Row, stay: Row, max = 20): number | undefined {
+  for (let n = 0; n <= max; n++) if (row.first + n * row.after < stay.first + n * stay.after) return n
+  return undefined
+}
+
+/** What a row costs over this turn and the next `turns - 1`: the "best" tag goes to the cheapest. */
+export const overTurns = (row: Row, turns = 5) => row.first + (turns - 1) * row.after
 
 /** Units to dollars: Sonnet 5.5 input is $3 per million tokens. ponytail: fixed rate, read real prices if they change. */
 export const dollars = (units: number) => (units * 3) / 1e6

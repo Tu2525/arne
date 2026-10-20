@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { LAYA_URL, layaBody, layaVerdict, parseVerdict, SYSTEM } from './backends'
-import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, OUT, READ } from './econ'
-import type { BandState } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, overTurns, paysOffAfter, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, OUT, READ } from './econ'
+import type { BandState, Row as CostRow } from './econ'
 import { MODEL, route } from './route'
 import type { Backend, Decision, Tier } from './route'
 import { parseUsage, periodStart, PERIODS, savedText, summarize, usageRow } from './stats'
@@ -73,15 +73,13 @@ const currentAtom = atom({ plugin: 'arne', key: 'current' } as const, null)
 const expectedAtom = atom({ plugin: 'arne', key: 'expected' } as const, null)
 // A Summarize, then send/continue is running: its compaction must not also send "Continue".
 const compactSendingAtom = atom({ plugin: 'arne', key: 'compactSending' } as const, false)
-// Set while a handoff's compact runs: where its summary is copied ('' for the default surface).
-const handoffTo = atom({ plugin: 'arne', key: 'handoffTo' } as const, null)
+// The tier the last handoff went to, for the panel's note; the "Handoff…" item's tier list is open (17w).
+const handedOff = atom({ plugin: 'arne', key: 'handedOff' } as const, null)
+const handoffMenu = atom({ plugin: 'arne', key: 'handoffMenu' } as const, false)
 // The Stats pane's three periods, parsed from the log once per open rather than on every press.
 const statsData = atom({ plugin: 'arne', key: 'stats' } as const, null)
 const TIER_NAME_OF: Record<Tier, string> = { S: 'haiku', M: 'sonnet', L: 'opus' }
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
-
-const rowLabel = (row: { action: string; to?: string }) =>
-  row.action === 'switch' ? `Switch to ${row.to}` : row.action === 'compact' ? 'Compact (Haiku summary)' : row.action === 'handoff' ? 'Handoff' : 'Continue'
 
 // /compact runs as the app's own command, so the idle wait and the app's own summary path apply.
 async function effortlessOn($: any): Promise<boolean> {
@@ -117,32 +115,59 @@ async function compactNow($: any, note: string): Promise<boolean> {
   }
 }
 
-// --- Handoff (step 17o) ---
-// A handoff is a compact whose summary also goes to a file and the clipboard, for a fresh chat.
-// It reuses the compact path (no API reads the chat's messages), so this chat is compacted too.
+// --- Handoff (17o, 17w) ---
+// Haiku summarizes the chat into arne-handoff.md and the clipboard. Then /clear starts a fresh chat in
+// place, pinned to `tier`, whose first message is the summary. The old chat stays in history; no plugin
+// call archives a desktop chat, so that stays the person's click. One at a time (the compacting atom).
 const HANDOFF_FILE = 'arne-handoff.md'
+const SUMMARY_SYSTEM = 'Summarize this coding conversation for its next turn: goal, decisions and why, files changed (paths), exact errors, open questions, next step. Plain text, under 1500 words.'
 
-async function handoffNow($: any, surface: string | undefined) {
-  if ((await read($, handoffTo)) !== null || (await read($, compacting))) return
-  await update($, handoffTo, () => surface ?? '')
-  await compactNow($, '').finally(() => update($, handoffTo, () => null))
-}
+// Set before the first await, so two presses in the same tick still run one handoff; the atom draws "summarizing…".
+let handingOff = false
+async function handoff($: any, tier: Tier, surface?: string) {
+  if (handingOff) return
+  handingOff = true
+  if (await read($, compacting)) return void (handingOff = false)
+  await update($, compacting, () => true)
+  let step = 'the summary'
+  try {
+    const msgs: any = await $.session.messages()
+    const said = (Array.isArray(msgs) ? msgs : []).filter((m: any) => m.text?.trim())
+    if (said.length === 0) throw new Error('empty chat')
+    const r = await $.model.complete(
+      { model: live.compactModel, prompt: summaryPrompt(said), system: SUMMARY_SYSTEM, effort: 'low' },
+      { timeoutMs: 120_000 },
+    )
+    if (!r.isAnswered || !r.text) throw new Error('no summary')
+    const sum = usageRow('summary', await $.clock.now(), r.usage, MODEL[TIER_OF[live.compactModel] ?? 'S'])
+    if (sum) await appendLog($, sum)
+    const text = `# Handoff
 
-// Called with the summary from session.compact while a handoff runs. Never archives or deletes the chat.
-async function saveHandoff($: any, summary: string) {
-  const text = `# Handoff
+Summary of an earlier chat (written by ${shortModel(live.compactModel)} for arne):
 
-${summary}
+${r.text}
 `
-  const saved = await $.fs.write(HANDOFF_FILE, text).then(() => true, () => false)
-  const copied = (await $.ui.copy({ text, surface: (await read($, handoffTo)) || undefined }).catch(() => ({ isCopied: false }))).isCopied
-  $.ui.toast(
-    copied
-      ? `arne: handoff copied${saved ? ` and saved to ${HANDOFF_FILE}` : ''}. Paste it into a new chat; archive this one when you are done.`
-      : saved
-        ? `arne: handoff saved to ${HANDOFF_FILE}. Paste it into a new chat; archive this one when you are done.`
-        : 'arne: could not save or copy the handoff.',
-  )
+    await $.fs.write(HANDOFF_FILE, text).catch(() => undefined)
+    await $.ui.copy({ text, surface }).catch(() => undefined)
+    step = '/clear'
+    await $.command.run({ command: 'clear', args: '' })
+    await update($, cache, () => null) // the new chat has no cache yet
+    step = '/model'
+    // Pinned after the clear: a pin belongs to the chat it was set in.
+    await setPinPart($, { tier }, false)
+    if (tierOf(await $.session.model()) !== tier) await moveModel($, MODEL[tier])
+    if (tierOf(await $.session.model()) !== tier) throw new Error('model')
+    step = 'sending the summary'
+    await $.prompt.submit({ text, asUser: true })
+    await update($, handedOff, () => tier)
+    $.ui.toast(`arne: handed off to ${shortModel(MODEL[tier])}. Old chat saved in history; archive it from the sidebar when you are done.`)
+  } catch {
+    $.ui.toast(`arne: handoff stopped at ${step}.${step === 'the summary' ? '' : ` The summary is on your clipboard and in ${HANDOFF_FILE}.`}`)
+  } finally {
+    handingOff = false
+    await update($, compacting, () => false)
+    await update($, handoffMenu, () => false)
+  }
 }
 
 // --- The held prompt (step 17a) ---
@@ -248,6 +273,12 @@ async function coldOffer($: any, now: number) {
   const resend = advice.rows.find(r => r.action === 'continue')!.first
   const summary = advice.rows.find(r => r.action === 'compact')!.first
   return summary < resend ? { c, ...advice } : undefined
+}
+
+// Where a handoff goes when no tier is named: the tier the judge last wanted, else the chat's own.
+async function handoffTier($: any): Promise<Tier> {
+  const l = await read($, last)
+  return tierOf(l?.waitFor ?? l?.model ?? '') ?? tierOf(await $.session.model()) ?? 'M'
 }
 
 // The one on/off answer every surface reads: the /arne reply, the band, the status line and the pane.
@@ -656,7 +687,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'arne',
-      description: 'Auto model and effort routing: on, off, pin, unpin, why, log, stats, backend, debug',
+      description: 'Auto model and effort routing: on, off, pin, unpin, handoff, why, log, stats, backend, debug',
     })
     const eff = await effortlessOn($)
     await update($, effortless, () => eff)
@@ -710,7 +741,7 @@ export const register: Register = (on, options) => {
         {
           model: live.compactModel,
           prompt: summaryPrompt(e.messages),
-          system: 'Summarize this coding conversation for its next turn: goal, decisions and why, files changed (paths), exact errors, open questions, next step. Plain text, under 1500 words.' + (e.instructions ? ` Keep: ${e.instructions}` : ''),
+          system: SUMMARY_SYSTEM + (e.instructions ? ` Keep: ${e.instructions}` : ''),
           effort: 'low',
         },
         { timeoutMs: 120_000 },
@@ -718,7 +749,6 @@ export const register: Register = (on, options) => {
       if (!r.isAnswered || !r.text) return next(e)
       const sum = usageRow('summary', await $.clock.now(), r.usage, MODEL[TIER_OF[live.compactModel] ?? 'S'])
       if (sum) await appendLog($, sum)
-      if ((await read($, handoffTo)) !== null) await saveHandoff($, r.text)
       const kept = e.messages.slice(-KEEP_AFTER_COMPACT) // word for word after the summary (17v)
       return {
         messages: [
@@ -816,6 +846,14 @@ export const register: Register = (on, options) => {
         )
         return { text: `arne stats (an estimate: each turn's real tokens, priced again on Opus or Sonnet):\n${lines.join('\n')}` }
       }
+      case 'handoff': {
+        const named: Tier | undefined = TIER_OF[rest[0] ?? '']
+        if (rest[0] && !named) return { text: 'Usage: /arne handoff [haiku|sonnet|opus]' }
+        const tier = named ?? (await handoffTier($))
+        // Next tick: /clear and /model are refused from inside a command's own hook.
+        $.clock.after(0, () => handoff($, tier))
+        return { text: `arne: handing off to ${shortModel(MODEL[tier])}…` }
+      }
       case 'why': {
         const l = await read($, last)
         return { text: l ? `${l.model} · ${l.effort}: ${l.reason} (${l.source})` : 'No decision yet.' }
@@ -847,7 +885,7 @@ export const register: Register = (on, options) => {
         const mode = await modeOf($)
         const state = mode === 'paused' ? 'paused (you picked a model; /arne on resumes)' : mode
         return {
-          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, pin, unpin, why, log, stats, backend, debug.`,
+          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, pin, unpin, handoff, why, log, stats, backend, debug.`,
         }
       }
     }
@@ -1012,7 +1050,11 @@ export const register: Register = (on, options) => {
     // effort, the reason, and the cache on the right. Pressing it opens a small panel under it.
     // Model and effort words keep a fixed width, so nothing moves sideways between turns.
     const open = whyIsOpen // the whyOpen atom now holds "panel open"
-    const toggle = () => update($, whyOpen, o => !o)
+    // Closing the panel also clears the handoff note.
+    const toggle = async () => {
+      await update($, whyOpen, o => !o)
+      await update($, handedOff, () => null)
+    }
     const runModel = appModel ?? (l ? l.model : running ?? MODEL.M)
     const modelWord = shortModel(runModel)
     const effortWord = tierOf(runModel) === 'S' ? '' : ((mode === 'on' ? l?.effort : await read($, appEffort)) ?? '')
@@ -1073,6 +1115,32 @@ export const register: Register = (on, options) => {
         : waiting
           ? `${cap(plainReason(l.reason))}, so ${shortModel(waiting)} fits better. Switching now re-reads ${chatK} tokens, so arne stays on ${modelWord} until the cache cools.${lastNote}`
           : `${modelWord} because ${plainReason(l.reason)}.${lastNote}`
+    // 17w: a cheaper tier fits but switching on the warm cache does not pay, so the panel prices the three
+    // ways on from coldAdvice: stay, switch in this chat, or hand off to a fresh chat on that tier.
+    const want = waiting ? tierOf(waiting) : undefined
+    const doneTo = await read($, handedOff)
+    const name = (t: Tier) => shortModel(MODEL[t])
+    let costs: { key: string; label: string; money: string; best: boolean; tier?: Tier }[] = []
+    if (c && want && !pinned && !doneTo && left > 0 && PRICE[want] < PRICE[c.model] && planSwitch({ decided: want, chat: c.model, C: c.C, warmUntil: c.warmUntil, now }).why === 'sticky') {
+      const rows = coldAdvice(c.C, c.model, c.warmUntil, now).rows
+      const stay = rows.find(r => r.action === 'continue')!
+      const sw = rows.find(r => r.action === 'switch' && r.to === want)!
+      const ho = rows.find(r => r.action === 'handoff' && r.to === want)!
+      const best = [stay, sw, ho].reduce((a, b) => (overTurns(b) < overTurns(a) ? b : a))
+      const usd = (u: number) => (dollars(u) < 0.01 ? 'under $0.01' : `$${dollars(u).toFixed(2)}`)
+      const payoff = (r: CostRow) => {
+        const n = paysOffAfter(r, stay)
+        return n === undefined ? " · doesn't pay off soon" : n === 0 ? ' · cheaper from the start' : ` · pays off after ${n} turn${n === 1 ? '' : 's'}`
+      }
+      const money = (r: CostRow, note = '') => `${usd(r.first)} now${note}, ${usd(r.after)} a turn${r === stay ? '' : payoff(r)}`
+      costs = [
+        { key: 'stay', label: `Stay on ${name(c.model)}`, money: money(stay), best: best === stay },
+        { key: 'switch', label: `Switch to ${name(want)} in this chat`, money: money(sw, ' (re-reads the whole chat cold)'), best: best === sw },
+        { key: 'handoff', label: `Handoff to ${name(want)}`, money: money(ho, ` (${cap(live.compactModel)} summary plus a small new chat)`), best: best === ho, tier: want },
+      ]
+    }
+    const menuOpen = await read($, handoffMenu)
+    const alertTier = await handoffTier($)
     return (
       <Box flexDirection="column" rowGap={gui ? 1 : 0}>
         {effortOn &&
@@ -1101,7 +1169,7 @@ export const register: Register = (on, options) => {
             coldLine,
             busy ?? [
               <Button key="compact" variant="primary" label="Summarize" onPress={() => compactNow($, '')} />,
-              <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
+              <Button key="handoff" plain label={`Handoff to ${name(alertTier)}`} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
               <Button key="continue" plain role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
             ],
           )}
@@ -1119,7 +1187,7 @@ export const register: Register = (on, options) => {
             busy ?? [
               // role="dismiss" only tells the surface how to draw it; the press itself hides the alert for this cold spell.
               <Button key="dismiss" plain role="dismiss" label="Dismiss" onPress={() => update($, heavyDismissed, () => c.warmUntil[c.model] ?? 0)} />,
-              <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
+              <Button key="handoff" plain label={`Handoff to ${name(alertTier)}`} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
               <Button key="compact-send" variant="primary" label="Summarize, then continue" onPress={() => compactThenContinue($)} />,
             ],
           )}
@@ -1229,10 +1297,31 @@ export const register: Register = (on, options) => {
                   </Box>
                   {/* What a rating is for, under the two buttons (17v). */}
                   {l && !pinned && thankedKey !== l.key && <Text color="subtle">Ratings train Laya, your local judge. Saved only on this machine.</Text>}
+                  {costs.length > 0 && (
+                    <Box flexDirection="column">
+                      {costs.map(r => (
+                        <Box key={`cost-${r.key}`} flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
+                          <Box flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={1}>
+                            <Text>{r.label}</Text>
+                            <Text color="subtle">{r.money}</Text>
+                            {r.best && <Text color="subtle">best</Text>}
+                          </Box>
+                          {r.tier && (busy ?? <Button key="handoff-row" plain label={`Handoff to ${name(r.tier)}`} onPress={(p: any) => handoff($, r.tier!, p?.surface)} />)}
+                        </Box>
+                      ))}
+                    </Box>
+                  )}
+                  {doneTo && <Text color="subtle">{`Handed off to ${name(doneTo as Tier)}. Old chat saved in history; archive it from the sidebar when you are done.`}</Text>}
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
-                    <Box flexDirection="row" gap={2}>
+                    <Box flexDirection="row" flexWrap="wrap" gap={2}>
                       <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
                       <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
+                      {busy ?? <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />}
+                      {menuOpen &&
+                        !busy &&
+                        (['S', 'M', 'L'] as Tier[]).map(t => (
+                          <Button key={`handoff-${TIER_NAME_OF[t]}`} plain label={`to ${name(t)}`} onPress={(p: any) => handoff($, t, p?.surface)} />
+                        ))}
                     </Box>
                     {!narrow && <Text color="subtle">Esc to close</Text>}
                   </Box>

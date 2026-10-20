@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheTtlOf, coldAdvice, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText, clampEffort, clampTier, midTask, fillOf, fitRest, fitTier, plainReason } from './econ'
+import { cacheTtlOf, coldAdvice, overTurns, paysOffAfter, contextOf, costCompact, costContinue, mmss, nextTtl, planSwitch, routeWorth, summaryPrompt, tierOf, bandText, clampEffort, clampTier, midTask, fillOf, fitRest, fitTier, plainReason } from './econ'
 
 const near = (got: number, want: number) => expect(Math.abs(got - want) / want <= 0.05).toBe(true)
 
@@ -8,9 +8,30 @@ test('worked example: cold Opus chat, C = 150k, S = 4k', () => {
   near(costContinue(150_000, 'L', false), 600_000)
   near(costCompact(150_000, 4000, 'L'), 73_000)
   near(costContinue(150_000, 'L', true), 30_000)
-  const { best } = coldAdvice(150_000, 'L', {}, 0)
-  expect(best.action).toBe('compact')
-  near(best.after, 800)
+  const { best, rows } = coldAdvice(150_000, 'L', {}, 0)
+  const compact = rows.find(r => r.action === 'compact')!
+  expect(compact.first < rows.find(r => r.action === 'continue')!.first).toBe(true)
+  near(compact.after, 800)
+  // A handoff to Haiku writes the summary to Haiku's cheaper cache, so its first request is the cheapest (17w).
+  expect([best.action, best.to]).toEqual(['handoff', 'S'])
+})
+
+test('handoff to Sonnet from a warm 150k Opus chat costs less per turn than staying, priced on Sonnet (17w)', () => {
+  const { rows } = coldAdvice(150_000, 'L', { L: 10 }, 0)
+  const stay = rows.find(r => r.action === 'continue')!
+  const sonnet = rows.find(r => r.action === 'handoff' && r.to === 'M')!
+  expect(sonnet.after < stay.after).toBe(true)
+  near(sonnet.after, 6000 * 0.1)
+  near(sonnet.first, costCompact(150_000, 6000, 'M'))
+  expect(rows.filter(r => r.action === 'handoff').map(r => r.to).sort()).toEqual(['L', 'M', 'S'])
+})
+
+test('paysOffAfter: $9 now and $1 a turn beats $4 and $4 after 2 turns; never past 20 (17w)', () => {
+  const stay = { action: 'continue' as const, first: 4, after: 4 }
+  expect(paysOffAfter({ action: 'handoff', first: 9, after: 1 }, stay)).toBe(2)
+  expect(paysOffAfter({ action: 'switch', first: 3, after: 9 }, stay)).toBe(0)
+  expect(paysOffAfter({ action: 'switch', first: 100, after: 3 }, stay)).toBeUndefined()
+  expect(overTurns({ action: 'handoff', first: 9, after: 1 })).toBe(13)
 })
 
 test('warm Opus chat: compact pays back in about 3 requests', () => {
