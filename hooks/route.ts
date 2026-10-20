@@ -26,25 +26,18 @@ const PRIORS: Record<string, Verdict> = {
 }
 
 const CONTINUE = /^\W*(y|yes|ok|okay|continue|go on|go ahead|proceed|sure|ok do it|do it)\W*$/i
-const HARD = /\b(architect\w*|why does|race condition|security)\b/i
-const EASY = /\b(typo|rename|format|what is)\b/i
-const LONG = 2000
-const EASY_MAX = 300 // a long prompt that says "rename" is rarely just a rename
 // A short follow-up with none of these words carries on the work in hand ("looks good, next one"):
 // it keeps the previous tier and effort and the judge is not asked (17p).
+// No keyword or length sends a prompt to a tier: the judge reads every new task, since a word is
+// a poor guess ("add a security note" is no Opus job) and a judge call costs far less than a wrong tier.
 const FOLLOW_MAX = 80
-const TASK = /\b(add|build|write|fix|implement|create|refactor|make|change|remove|delete|test|debug|explain|why|how|update|rename|move|review|design|plan|migrate|install|deploy|port|rewrite|find|search|list|show|check|run|look|read|summari[sz]e|compare|convert|generate|setup|set up)\b/i
+const TASK = /\b(add|build|write|fix|implement|create|refactor|make|change|remove|delete|test|debug|explain|why|how|what|update|rename|move|review|design|plan|migrate|install|deploy|port|rewrite|find|search|list|show|check|run|look|read|summari[sz]e|compare|convert|generate|setup|set up|typo|format|security|architect\w*|race)\b/i
 
-const fast = (text: string): Verdict | 'keep' | undefined => {
-  if (text.trim() === '' || CONTINUE.test(text)) return 'keep'
-  if (text.trim().length < FOLLOW_MAX && !TASK.test(text) && !HARD.test(text) && !EASY.test(text)) return 'keep'
-  if (HARD.test(text)) return { tier: 'L', effort: 'high', reason: 'fast: hard' }
-  if (text.length < EASY_MAX && EASY.test(text)) return { tier: 'S', effort: 'low', reason: 'fast: easy' }
-}
+const keep = (text: string) => text.trim() === '' || CONTINUE.test(text) || (text.trim().length < FOLLOW_MAX && !TASK.test(text))
 
 const DEFAULT: Verdict = { tier: 'M', effort: 'medium', reason: 'default' }
 
-// Precedence: pin > paused > fast path > backends > prev > default.
+// Precedence: pin > paused > follow-up keeps prev > backends > prev > default.
 // undefined = leave the request alone (paused).
 export async function route(text: string, ctx: Ctx = {}): Promise<Decision | undefined> {
   if (ctx.pin) return { ...ctx.pin, reason: 'pinned', source: 'pin' }
@@ -53,20 +46,13 @@ export async function route(text: string, ctx: Ctx = {}): Promise<Decision | und
   const prior = ctx.agentType ? PRIORS[ctx.agentType] : undefined
   if (prior?.tier === 'L') return { ...prior, source: 'prior' }
 
-  // A subagent's brief is Claude's, not the person's: its length says nothing about difficulty (17x).
-  const f = ctx.agentType ? undefined : fast(text)
-  if (f === 'keep') {
-    if (ctx.prev) return { ...ctx.prev, reason: 'continuation', source: 'prev' }
-  } else if (f) {
-    return prior && f.tier !== 'L' ? { ...prior, source: 'prior' } : { ...f, source: 'fast' }
-  }
+  // A subagent's brief is a new task every time, so it never just continues the last turn (17x).
+  if (!ctx.agentType && ctx.prev && keep(text)) return { ...ctx.prev, reason: 'continuation', source: 'prev' }
 
   for (const b of ctx.backends ?? []) {
     const v = await b.ask(text).catch(() => undefined)
     if (v) return prior && v.tier !== 'L' ? { ...prior, source: 'prior' } : { ...v, source: b.name }
   }
-  // A long prompt is often a detailed spec for a plain job, so the judges read it first; with none to answer, long means L.
-  if (!ctx.agentType && text.length > LONG) return { tier: 'L', effort: 'high', reason: 'fast: long', source: 'fast' }
   if (prior) return { ...prior, source: 'prior' }
   if (ctx.prev) return { ...ctx.prev, source: 'prev' }
   return { ...DEFAULT, source: 'default' }

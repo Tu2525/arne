@@ -69,7 +69,8 @@ const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer'
 
 test('a model move runs the real /model first, then sends the prompt exactly once (17c)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
-  // "what is a mutex" is the fast path's Haiku; the chat is on Opus with no warm cache: a boundary.
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
+  // The judge picks Haiku; the chat is on Opus with no warm cache: a boundary.
   const r = await $.prompt.submit(typed('what is a mutex'))
   expect('drop' in r && r.drop !== undefined).toBe(true)
   await clock.settle()
@@ -100,6 +101,7 @@ test('an effort change is silent: no /effort typed, the prompt is not dropped (1
 
 test('a cold, big chat holds the prompt; Send as is sends it once, however often it is pressed (17a)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
   // One 50k-token answer on Opus, then two hours: the cache is cold and the chat is past coldTokens.
   s.usage = { input_tokens: 50_000 }
   for await (const _ of $.turn.step({ turnId: 't0', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
@@ -352,6 +354,7 @@ test('/arne handoff haiku runs the summary, /clear, /model haiku and sends the s
 
 test('the resting line is the model and effort, then the reason: no "auto ·", no "(routed)"; a pin says pinned', async ($: any, on: any) => {
   const { s, clock } = engine(on)
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
   on('turn.start', (_$: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
   await $.prompt.submit(typed('what is a mutex'))
   for (let i = 0; i < 3; i++) await clock.settle()

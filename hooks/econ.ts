@@ -222,8 +222,6 @@ export function clampEffort<E extends string>(effort: E, floor: string, ceiling:
 
 /** A decision's internal reason code as a plain phrase. Judge reasons are already words and pass through. */
 export function plainReason(code: string): string {
-  if (code === 'fast: hard') return 'this looks hard'
-  if (code === 'fast: easy') return 'this looks easy'
   if (code === 'continuation') return 'it continues the last turn'
   if (code === 'default') return 'there is no clear signal'
   if (code === 'window') return 'the chat needs a bigger window'

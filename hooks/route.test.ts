@@ -13,24 +13,12 @@ const says = (tier: 'S' | 'M' | 'L', name = 'b'): Backend => ({
 const dead: Backend = { name: 'dead', ask: async () => { throw new Error('timeout') } }
 const silent: Backend = { name: 'silent', ask: async () => undefined }
 
-test('fast path table', async () => {
-  const table: [string, string][] = [
-    ['fix the typo in README', 'S'],
-    ['rename foo to bar', 'S'],
-    ['what is a mutex', 'S'],
-    ['architect the auth layer', 'L'],
-    ['fix the design typo in plan.md', 'S'],
-    ['why does this deadlock', 'L'],
-    ['what is the security risk here', 'L'],
-    ['x'.repeat(2500), 'L'], // no judge to ask: long means L
-  ]
-  for (const [text, tier] of table) expect((await route(text))?.tier).toBe(tier)
-})
-
-test('a long prompt is read by the judge, not sent to Opus by length alone', async () => {
-  const spec = 'Update the loader and run the tests. '.repeat(100)
-  expect((await route(spec, { backends: [says('M')] }))?.tier).toBe('M')
-  expect((await route(spec, { backends: [dead] }))?.tier).toBe('L')
+test('no word or length picks a tier: the judge reads every new task', async () => {
+  for (const text of ['fix the typo in README', 'add a security note to the README', 'why does this deadlock', 'x'.repeat(2500)]) {
+    expect((await route(text, { prev, backends: [says('S')] }))?.tier).toBe('S')
+    expect((await route(text, { backends: [says('L')] }))?.tier).toBe('L')
+    expect((await route(text))?.source).toBe('default') // no judge: Sonnet, not a guess
+  }
 })
 
 test('continuations keep prev, else default', async () => {
@@ -52,7 +40,7 @@ test('a short follow-up keeps the last tier and asks no judge; a new task is jud
   expect(asked).toBe(0)
   // After Haiku turns, a new hard task goes up; a new plain task is judged.
   const haiku: Decision = { tier: 'S', effort: 'low', reason: 'x', source: 'haiku' }
-  expect((await route('design the plugin architecture for routing', { prev: haiku }))?.tier).toBe('L')
+  expect((await route('design the plugin architecture for routing', { prev: haiku, backends: [says('L', 'haiku')] }))?.tier).toBe('L')
   expect((await route('fix the parser bug in lexer.ts', { prev: haiku, backends: [says('M', 'haiku')] }))?.tier).toBe('M')
 })
 
@@ -62,7 +50,7 @@ test('fallback chain', async () => {
   expect((await route('refactor the cache', { backends: [dead] }))?.source).toBe('default')
 })
 
-test('pin beats paused beats fast path', async () => {
+test('pin beats paused', async () => {
   const pin = { tier: 'L' as const, effort: 'high' as const }
   expect((await route('fix typo', { pin, paused: true }))?.source).toBe('pin')
   expect(await route('fix typo', { paused: true })).toBe(undefined)

@@ -121,7 +121,6 @@ test('a chat too big for a tier moves to the next, never below the asked tier (1
 })
 
 test('internal reason codes read as plain words (17i)', () => {
-  expect(plainReason('fast: hard')).toBe('this looks hard')
   expect(plainReason('prior: Explore')).toBe('Explore is a fixed rule')
   expect(plainReason('continuation')).toBe('it continues the last turn')
   expect(plainReason('Looks like a rename')).toBe('Looks like a rename')
