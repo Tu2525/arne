@@ -1674,10 +1674,10 @@ export const register: Register = (on, options) => {
                         <Box key={`cost-${r.key}`} flexDirection="column">
                           <Box key={`cost-${r.key}-row`} flexDirection="row" alignItems="center" columnGap={2}>
                             <Box width={W.label} flexShrink={0}>
-                              <Text dimColor={r.key === 'head'}>{r.label}</Text>
+                              <Text dimColor={r.key === 'head'} weight={r.key === 'head' ? undefined : 'semibold'}>{r.label}</Text>
                             </Box>
                             <Box width={W.now} flexShrink={0}>
-                              <Text tabular dimColor={r.key === 'head'}>{r.now}</Text>
+                              <Text tabular dimColor={r.key === 'head'} weight={r.key === 'head' ? undefined : 'semibold'}>{r.now}</Text>
                             </Box>
                             <Box width={W.each} flexShrink={0}>
                               <Text tabular dimColor>{r.each}</Text>
