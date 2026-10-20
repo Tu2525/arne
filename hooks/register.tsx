@@ -1457,6 +1457,19 @@ export const register: Register = (on, options) => {
       })
       costs = [row('stay', `Stay on ${name(c.model)}`, stay), row('switch', `Switch to ${name(want)}`, sw), row('handoff', `New chat on ${name(want)}`, ho, want)]
     }
+    // The handoff math for a big chat: what a new chat on each cheaper tier costs now, saves a turn, and when it breaks even.
+    const handoffMath: { key: string; text: string }[] = []
+    if (c && !costs.length && !pinned && !doneTo && c.C >= live.coldTokens) {
+      const rows = coldAdvice(c.C, c.model, c.warmUntil, now).rows
+      const stay = rows.find(r => r.action === 'continue')!
+      for (const t of ['S', 'M'] as Tier[]) {
+        const ho = rows.find(r => r.action === 'handoff' && r.to === t)
+        if (!ho || PRICE[t] >= PRICE[c.model]) continue
+        const n = paysOffAfter(ho, stay)
+        const tail = n === undefined ? "doesn't break even in 20 turns" : n === 0 ? 'cheaper from the start' : `breaks even in ${n} turn${n === 1 ? '' : 's'}`
+        handoffMath.push({ key: t, text: `New chat on ${name(t)} via a ${cap(live.compactModel)} summary: ${usd(ho.first)} now (staying ${usd(stay.first)}) · saves ${usd(stay.after - ho.after)} a turn · ${tail}` })
+      }
+    }
     // While the table offers its Hand off, that is the one Handoff in the panel.
     const tableHandoff = costs.some(r => r.tier)
     const menuOpen = await read($, handoffMenu)
@@ -1615,6 +1628,13 @@ export const register: Register = (on, options) => {
                     </Box>
                     {whyNote !== '' && <Text size="footnote" dimColor>{whyNote}</Text>}
                   </Box>
+                  {handoffMath.length > 0 && (
+                    <Box key="handoff-math" flexDirection="column">
+                      {handoffMath.map(h => (
+                        <Text key={`hm-${h.key}`} size="footnote" dimColor>{h.text}</Text>
+                      ))}
+                    </Box>
+                  )}
                   {costs.length > 0 && (
                     <Box key="costs" flexDirection="column" rowGap={gui ? 1 : 0}>
                       {[{ key: 'head', label: '', now: 'Now', each: 'Each turn', note: '', tier: undefined as Tier | undefined }, ...costs].map(r => (
