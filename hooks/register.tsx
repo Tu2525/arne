@@ -55,6 +55,28 @@ const layaDown = atom({ plugin: 'arne', key: 'layaDown' } as const, false)
 const appPicker = atom({ plugin: 'arne', key: 'appPicker' } as const, null)
 // The Stats pane's period (17q).
 const statsPeriod = atom({ plugin: 'arne', key: 'statsPeriod' } as const, 'week')
+// 17u. Every own config write reloads the plugin and wipes module state, so what a press must show at
+// once, or what has to outlive that reload, lives here.
+// Bumped on every option change: the Settings pane reads it, since `live` alone draws nothing again.
+const liveRev = atom({ plugin: 'arne', key: 'liveRev' } as const, 0)
+// Bumped after a pin's store write: the band reads it, since a store read does not subscribe.
+const pinRev = atom({ plugin: 'arne', key: 'pinRev' } as const, 0)
+// The cold spell (its warmUntil) whose heavy alert the person dismissed, as coldDismissed.
+const heavyDismissed = atom({ plugin: 'arne', key: 'heavyDismissed' } as const, 0)
+// A compact arne started is running: its buttons give way to "summarizing…", and a second press does nothing.
+const compacting = atom({ plugin: 'arne', key: 'compacting' } as const, false)
+// `claude plugin disable effortless` is running (up to 60 s): its button is hidden meanwhile.
+const disabling = atom({ plugin: 'arne', key: 'disabling' } as const, false)
+// The main turn's decision, for its steps.
+const currentAtom = atom({ plugin: 'arne', key: 'current' } as const, null)
+// The session model arne expects: the one it last switched to, or last saw. A switch to another tier is the person's.
+const expectedAtom = atom({ plugin: 'arne', key: 'expected' } as const, null)
+// A Summarize, then send/continue is running: its compaction must not also send "Continue".
+const compactSendingAtom = atom({ plugin: 'arne', key: 'compactSending' } as const, false)
+// Set while a handoff's compact runs: where its summary is copied ('' for the default surface).
+const handoffTo = atom({ plugin: 'arne', key: 'handoffTo' } as const, null)
+// The Stats pane's three periods, parsed from the log once per open rather than on every press.
+const statsData = atom({ plugin: 'arne', key: 'stats' } as const, null)
 const TIER_NAME_OF: Record<Tier, string> = { S: 'haiku', M: 'sonnet', L: 'opus' }
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
 
@@ -73,17 +95,25 @@ async function effortlessOn($: any): Promise<boolean> {
 
 // The state flips only at the next session start: effortless's hooks stay loaded until then.
 async function disableEffortless($: any) {
+  if (await read($, disabling)) return
+  await update($, disabling, () => true)
   const r = await $.process.run(['claude', 'plugin', 'disable', EFFORTLESS], { timeoutMs: 60_000 }).catch(() => undefined)
+  await update($, disabling, () => false)
   $.ui.toast(r?.exitCode === 0 ? 'arne: effortless disabled. Restart to hand effort to arne.' : 'arne: could not disable effortless; disable it from the plugin list.')
 }
 
+// One compact at a time: the alerts show "summarizing…" while it runs, and a second press returns false.
 async function compactNow($: any, note: string): Promise<boolean> {
+  if (await read($, compacting)) return false
+  await update($, compacting, () => true)
   try {
     await $.command.run({ command: 'compact', args: note.trim() })
     return true
   } catch {
     $.ui.toast('arne: compact failed; try again when the session is idle')
     return false
+  } finally {
+    await update($, compacting, () => false)
   }
 }
 
@@ -91,12 +121,11 @@ async function compactNow($: any, note: string): Promise<boolean> {
 // A handoff is a compact whose summary also goes to a file and the clipboard, for a fresh chat.
 // It reuses the compact path (no API reads the chat's messages), so this chat is compacted too.
 const HANDOFF_FILE = 'arne-handoff.md'
-let handoffSurface: string | undefined // set while a handoff's compact runs; where its summary is copied
 
 async function handoffNow($: any, surface: string | undefined) {
-  if (handoffSurface !== undefined) return
-  handoffSurface = surface ?? ''
-  await compactNow($, '').finally(() => (handoffSurface = undefined))
+  if ((await read($, handoffTo)) !== null || (await read($, compacting))) return
+  await update($, handoffTo, () => surface ?? '')
+  await compactNow($, '').finally(() => update($, handoffTo, () => null))
 }
 
 // Called with the summary from session.compact while a handoff runs. Never archives or deletes the chat.
@@ -106,7 +135,7 @@ async function saveHandoff($: any, summary: string) {
 ${summary}
 `
   const saved = await $.fs.write(HANDOFF_FILE, text).then(() => true, () => false)
-  const copied = (await $.ui.copy({ text, surface: handoffSurface || undefined }).catch(() => ({ isCopied: false }))).isCopied
+  const copied = (await $.ui.copy({ text, surface: (await read($, handoffTo)) || undefined }).catch(() => ({ isCopied: false }))).isCopied
   $.ui.toast(
     copied
       ? `arne: handoff copied${saved ? ` and saved to ${HANDOFF_FILE}` : ''}. Paste it into a new chat; archive this one when you are done.`
@@ -119,7 +148,6 @@ ${summary}
 // --- The held prompt (step 17a) ---
 // A prompt typed on a cold, big chat waits here until the person picks Compact & send or Send anyway.
 const CONTINUE_TEXT = 'Continue where you left off.'
-let compactSending = false // a Compact & send is running: its compaction must not also send "Continue"
 let lastReason: string | undefined // how the last main turn ended
 
 // Sends a prompt as the person's own words. A plugin's own $.prompt.submit skips that plugin's
@@ -135,19 +163,19 @@ async function sendAsUser($: any, text: string) {
 
 async function compactAndSend($: any) {
   const text = await read($, held)
-  if (!text || compactSending) return
+  if (!text || (await read($, compactSendingAtom)) || (await read($, compacting))) return
   await update($, held, () => null) // cleared first: a second click finds nothing to send
-  compactSending = true
-  const ok = await compactNow($, '').finally(() => (compactSending = false))
+  await update($, compactSendingAtom, () => true)
+  const ok = await compactNow($, '').finally(() => update($, compactSendingAtom, () => false))
   if (ok) await routeAndSend($, text)
   else await update($, held, () => text)
 }
 
 // Heavy banner: nothing is held (the prompt was never blocked), so after compacting arne sends "Continue".
 async function compactThenContinue($: any) {
-  if (compactSending) return
-  compactSending = true
-  const ok = await compactNow($, '').finally(() => (compactSending = false))
+  if ((await read($, compactSendingAtom)) || (await read($, compacting))) return
+  await update($, compactSendingAtom, () => true)
+  const ok = await compactNow($, '').finally(() => update($, compactSendingAtom, () => false))
   if (ok) await routeAndSend($, CONTINUE_TEXT)
 }
 
@@ -159,11 +187,8 @@ async function sendAnyway($: any) {
 }
 
 
-// Module state. Reset on a reload, like every module variable.
-let current: Decision | undefined
+// Module state. Reset on a reload, like every module variable (what must survive one is in atoms, 17u).
 let prev: Decision | undefined
-// The session model arne expects: the one it last switched to, or last saw. A switch to another tier is the person's.
-let expected: string | undefined
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
 let afterCompact = false // a compact just ran: the next prompt is a cache boundary
@@ -177,8 +202,9 @@ const agents = new Map<string, Decision | undefined>()
 type Pin = { tier?: Tier; effort?: Decision['effort'] }
 type Settings = { enabled: boolean; pin: Pin | null; backend: string }
 
-// The userConfig values, as the engine holds them. /config and the ⚙ pane both write through
-// $.config.set, which lands in the config.set hook below and keeps this copy in step.
+// The userConfig values, as the engine holds them. arne's own writes (the band, Settings, /arne) go
+// through setOption, which updates this copy itself: the app never shows a plugin its own config.set.
+// A /config write lands in the config.set hook below. Either write reloads arne, and register reads them again.
 type Live = {
   auto: boolean
   backend: string
@@ -233,40 +259,87 @@ async function modeOf($: any): Promise<Mode> {
 // Clears a pause: the session's model is now the one arne expects.
 async function resume($: any) {
   await update($, isPaused, () => false)
-  expected = await $.session.model()
+  const model: string = await $.session.model()
+  await update($, expectedAtom, () => model)
 }
 
-// The band's Auto button: on turns off, off or paused turns on (a pause resumes).
+// arne's own config writes while they run, by key. The app never shows them to arne's config.set hook
+// (index.d.ts, $.config.set); the test kit does, so the hook skips these keys to match the app.
+const ownWrites = new Set<string>()
+async function ownSet($: any, key: string, value: unknown): Promise<{ value: unknown } | { deny: string }> {
+  ownWrites.add(key)
+  try {
+    return await $.config.set({ key, value })
+  } catch (err) {
+    return { deny: String((err as Error)?.message ?? err) }
+  } finally {
+    ownWrites.delete(key)
+  }
+}
+
+// Puts one option into `live` and onto every surface: the band (isOff), the Settings pane (liveRev), the status line.
+async function applyLive($: any, field: keyof Live, value: unknown) {
+  ;(live as Record<string, unknown>)[field] = value
+  await update($, liveRev, n => n + 1)
+  if (field === 'auto') {
+    await update($, isOff, () => !value)
+    // Turning it on, from /config, the band, Settings or /arne on, is the person's go-ahead: clear any pause.
+    if (value) await resume($)
+    await showStatus($)
+  }
+}
+
+// The one writer for arne's options (17u): the surfaces change first, then the config write. A refused
+// write puts the old value back and says why.
+async function setOption($: any, field: keyof Live, value: unknown) {
+  const was = live[field]
+  await applyLive($, field, value)
+  const r = await ownSet($, `arne.${field}`, value)
+  if ('deny' in r) {
+    await applyLive($, field, was)
+    $.ui.toast(`arne: could not change ${field}: ${r.deny}`)
+  }
+}
+
+const setAuto = ($: any, on: boolean) => setOption($, 'auto', on)
+
+// The band's Auto button: on turns off, off turns on. A pause resumes without a config write.
 async function toggleAuto($: any) {
   const mode = await modeOf($)
-  await $.config.set({ key: 'arne.auto', value: mode !== 'on' })
-  if (mode !== 'on') await resume($)
+  if (mode !== 'paused') return setAuto($, mode === 'off')
+  await resume($)
   await showStatus($)
 }
 
 // Sets one part of the pin and keeps the other; a pin with neither part left is removed. A pin ends a pause.
-// A model pin moves the real /model at once, unless the pick already moved it (the app's own picker).
+// The band redraws first; a model pin then moves the real /model on the next tick, unless the pick
+// already moved it (the app's own picker). The tick also lets /arne pin run it: a /model run from inside
+// a command's own hook is refused.
 async function setPinPart($: any, part: Pin, move = true) {
   const next: Pin = { ...((await settings($)).pin ?? {}), ...part }
   if (next.tier === undefined) delete next.tier
   if (next.effort === undefined) delete next.effort
   if (next.tier || next.effort) await $.store.set(await pinKey($), next)
   else await $.store.delete(await pinKey($))
+  await update($, pinRev, n => n + 1)
   await resume($)
-  if (move && part.tier && tierOf(await $.session.model()) !== part.tier) await moveModel($, MODEL[part.tier])
   await showStatus($)
+  if (move && part.tier && tierOf(await $.session.model()) !== part.tier) {
+    const target = MODEL[part.tier]
+    $.clock.after(0, () => moveModel($, target))
+  }
 }
 
 // The real /model moves now, marked as arne's own so PostModelSwitch does not pause arne.
 async function moveModel($: any, target: string) {
-  const was = expected
-  expected = target
+  const was = await read($, expectedAtom)
+  await update($, expectedAtom, () => target)
   switching = true
   try {
     await $.command.run({ command: 'model', args: target })
     arneSwitched = true
   } catch {
-    expected = was
+    await update($, expectedAtom, () => was)
     $.ui.toast(`arne: could not switch /model to ${shortModel(target)}`)
   } finally {
     switching = false
@@ -277,11 +350,14 @@ async function moveModel($: any, target: string) {
 async function feedback($: any, verdict: 'up' | 'down') {
   const l = await read($, last)
   if (!l) return
+  // Thanked first, so the buttons give way on the press; a failed write brings them back.
+  const was = await read($, thanked)
+  await update($, thanked, () => l.key)
   try {
     const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
     await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify({ type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }) + '\n')
-    await update($, thanked, () => l.key)
   } catch {
+    await update($, thanked, () => was)
     $.ui.toast('arne: could not log that feedback')
   }
 }
@@ -468,14 +544,14 @@ async function switchThenSend($: any, target: string | undefined, effort: Decisi
     }
   }
   if ((await modeOf($)) === 'on' && target) {
-    const was = expected
-    expected = target
+    const was = await read($, expectedAtom)
+    await update($, expectedAtom, () => target)
     switching = true
     try {
       await $.command.run({ command: 'model', args: target })
       arneSwitched = true
     } catch {
-      expected = was
+      await update($, expectedAtom, () => was)
       planned.delete(text) // decided for a model it is not on: turn.start decides again
       $.ui.toast(`arne: could not switch /model to ${shortModel(target)}; sending on the current model`)
     } finally {
@@ -513,6 +589,32 @@ async function statsFor($: any, period: Period) {
   return summarize(parseUsage(text), periodStart(period, await $.clock.now()))
 }
 
+// The Stats pane reads all three periods from one parse at open, so a period press only redraws (17u).
+async function openStats($: any) {
+  const text: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
+  const rows = parseUsage(text)
+  const now: number = await $.clock.now()
+  await update($, statsData, () => Object.fromEntries(PERIODS.map(([p]) => [p, summarize(rows, periodStart(p, now))])))
+  await $.ui.open({ id: STATS, title: 'arne stats' })
+}
+
+// Drives the band's countdown. A reload cancels every timer and session.start does not run again, so the
+// band's render arms it too; `ticking` is module state, so a reload arms it once more. ponytail: a 1s state write.
+let ticking = false
+function armTick($: any) {
+  if (ticking) return
+  ticking = true
+  try {
+    $.clock.every(1000, async () => {
+      if ((await read($, cache)) === null) return
+      const now = await $.clock.now()
+      await update($, clockNow, () => now)
+    })
+  } catch {
+    ticking = false
+  }
+}
+
 // A main-loop response landed: the answering model's cache is warm for one more TTL.
 async function cacheTouched($: any, model: string, usage: unknown) {
   const tier = tierOf(model)
@@ -532,19 +634,13 @@ async function cacheTouched($: any, model: string, usage: unknown) {
 export const register: Register = (on, options) => {
   live = { ...DEFAULTS, ...(options as Partial<Live>) }
 
-  // Every write to an arne.* row lands here, from /config or the ⚙ pane alike.
+  // A write to an arne.* row from /config or another plugin lands here. arne's own writes never do: the
+  // app skips a plugin's own hooks, and ownWrites makes the test kit skip them the same way (17u).
   on('config.set', async ($, e, next) => {
+    if (ownWrites.has(e.key)) return next(e)
     const r = await next(e)
     const field = e.key.startsWith('arne.') ? (e.key.slice(5) as keyof Live) : undefined
-    if (field && FIELDS.includes(field) && !('deny' in r)) {
-      ;(live as Record<string, unknown>)[field] = r.value
-      if (field === 'auto') {
-        await update($, isOff, () => !r.value)
-        // Turning it on, from /config, the pane or /arne on, is the person's go-ahead: clear any pause.
-        if (r.value) await resume($)
-        await showStatus($)
-      }
-    }
+    if (field && FIELDS.includes(field) && !('deny' in r)) await applyLive($, field, r.value)
     return r
   }).catch(($, e, next) => next(e))
 
@@ -559,12 +655,7 @@ export const register: Register = (on, options) => {
     const first = await $.session.model()
     // The app's picker shows the session's model at start. Re-read each start, so a stale pick does not outlive it.
     await update($, appPicker, () => first)
-    // Drives the band's countdown. ponytail: a 1s state write; slow it down if redraws ever cost.
-    $.clock.every(1000, async () => {
-      if ((await read($, cache)) === null) return
-      const now = await $.clock.now()
-      await update($, clockNow, () => now)
-    })
+    armTick($)
     return next(e)
   })
 
@@ -574,7 +665,8 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     // ponytail: a manual pick of the tier arne already expects reads as arne's own and does not pause;
     // tell them apart by origin if command.run ever carries one for /model.
-    const isOwn = expected !== undefined && tierOf(e.to_model) === tierOf(expected)
+    const expected = await read($, expectedAtom)
+    const isOwn = expected !== null && tierOf(e.to_model) === tierOf(expected)
     // A pick in the desktop app's picker is an input: it pins that tier, not a pause. Auto in the band's panel unpins.
     if (e.source === 'sdk' && !switching) {
       await update($, appPicker, () => e.to_model)
@@ -584,7 +676,7 @@ export const register: Register = (on, options) => {
       const byHand = e.source === 'command' || e.source === 'picker'
       if (!isOwn && byHand && !(await read($, isOff))) await update($, isPaused, () => true)
     }
-    expected = e.to_model
+    await update($, expectedAtom, () => e.to_model)
     await update($, sessionModel, () => e.to_model)
     await showStatus($)
     return r
@@ -617,7 +709,7 @@ export const register: Register = (on, options) => {
       if (!r.isAnswered || !r.text) return next(e)
       const sum = usageRow('summary', await $.clock.now(), r.usage, MODEL[TIER_OF[live.compactModel] ?? 'S'])
       if (sum) await appendLog($, sum)
-      if (handoffSurface !== undefined) await saveHandoff($, r.text)
+      if ((await read($, handoffTo)) !== null) await saveHandoff($, r.text)
       const kept = e.messages.slice(-4)
       return {
         messages: [
@@ -635,7 +727,7 @@ export const register: Register = (on, options) => {
   on('classic.PostCompact', async ($, e, next) => {
     afterCompact = true
     const r = await next(e)
-    if (e.trigger === 'manual' && !compactSending && live.continueAfterCompact && !(await read($, held)) && midTask(lastReason, e.compact_summary)) {
+    if (e.trigger === 'manual' && !(await read($, compactSendingAtom)) && live.continueAfterCompact && !(await read($, held)) && midTask(lastReason, e.compact_summary)) {
       $.clock.after(0, () => routeAndSend($, CONTINUE_TEXT))
     }
     return r
@@ -670,14 +762,11 @@ export const register: Register = (on, options) => {
 
     switch (sub) {
       case 'on':
-        await $.config.set({ key: 'arne.auto', value: true })
-        await resume($)
-        await showStatus($)
-        return { text: 'arne on.' }
+        await setAuto($, true)
+        return { text: live.auto ? 'arne on.' : 'arne stays off: the setting was refused.' }
       case 'off':
-        await $.config.set({ key: 'arne.auto', value: false })
-        await showStatus($)
-        return { text: 'arne off. Requests use the session model.' }
+        await setAuto($, false)
+        return { text: live.auto ? 'arne stays on: the setting was refused.' : 'arne off. Requests use the session model.' }
       case 'settings':
         await $.ui.open({ id: SETTINGS, title: 'arne settings' })
         return { text: 'arne settings opened. Changes here match /config.' }
@@ -686,18 +775,18 @@ export const register: Register = (on, options) => {
         if (!tier) return { text: 'Usage: /arne pin haiku|sonnet|opus [low|medium|high|xhigh|max]' }
         if (rest[1] && !(rest[1] in EFFORT_RANK)) return { text: 'Efforts: low, medium, high, xhigh, max.' }
         const effort = (rest[1] ?? 'medium') as Decision['effort']
-        // A pin is the person's pick made through arne: it ends a pause and moves /model now. The move
-        // waits a tick: a /model run from inside this command's own hook is refused.
-        $.clock.after(0, () => setPinPart($, { tier, effort }))
+        // A pin is the person's pick made through arne: it ends a pause and moves /model (on the next tick).
+        await setPinPart($, { tier, effort })
         return { text: `arne pinned to ${rest[0]} · ${effort}.` }
       }
       case 'unpin':
-        await $.store.delete(await pinKey($))
+        await setPinPart($, { tier: undefined, effort: undefined })
         return { text: 'arne unpinned.' }
       case 'backend': {
         const b = rest[0]
         if (b !== 'haiku' && b !== 'heuristic' && b !== 'laya') return { text: 'Backends: haiku, heuristic, laya.' }
-        await $.store.set('backend', b)
+        await setOption($, 'backend', b)
+        if (live.backend !== b) return { text: `arne backend stays ${live.backend}: the setting was refused.` }
         if (b === 'laya') {
           return {
             text: 'arne backend: laya. It needs laya-serve on PATH (Python 3.10+, the laya package, torch; git clone https://github.com/NandhaKishorM/laya and pip install -e .). Until it answers, turns fall back to haiku.',
@@ -740,7 +829,7 @@ export const register: Register = (on, options) => {
         const warm = (['S', 'M', 'L'] as Tier[])
           .map(t => `${MODEL[t]} ${(c.warmUntil[t] ?? 0) > now ? `warm ${mmss(c.warmUntil[t]! - now)}` : 'cold'}`)
           .join(', ')
-        return { text: `arne debug: ${await modeOf($)}, ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. expected ${expected ?? 'none'}, switching ${switching}, after compact ${afterCompact}.` }
+        return { text: `arne debug: ${await modeOf($)}, ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. expected ${(await read($, expectedAtom)) ?? 'none'}, switching ${switching}, after compact ${afterCompact}.` }
       }
       default: {
         const mode = await modeOf($)
@@ -761,8 +850,9 @@ export const register: Register = (on, options) => {
       // A model the user set by hand (/model) pauses arne. classic.PostModelSwitch catches it at once;
       // this is the fallback. By tier: the same model can come back as an alias or a full id.
       // Skipped while arne's own switch waits: the session is still on the old model then.
-      if (expected !== undefined && !switching && tierOf(model) !== tierOf(expected) && s.enabled) await update($, isPaused, () => true)
-      expected ??= model
+      const expected = await read($, expectedAtom)
+      if (expected !== null && !switching && tierOf(model) !== tierOf(expected) && s.enabled) await update($, isPaused, () => true)
+      if (expected === null) await update($, expectedAtom, () => model)
       await update($, sessionModel, () => model)
 
       // Decided at prompt.submit for a typed prompt; anything else (a notification, a prompt typed
@@ -777,7 +867,8 @@ export const register: Register = (on, options) => {
       const chat = tierOf(model)
       // Held on the chat's model (cache warm, or mid-turn): the row keeps the decision's own reason and says what it waited for.
       const waitFor = decided && chat && decided.tier !== chat ? MODEL[decided.tier] : undefined
-      current = decided && chat && decided.tier !== chat ? { ...decided, tier: chat } : decided
+      const current = decided && chat && decided.tier !== chat ? { ...decided, tier: chat } : decided
+      await update($, currentAtom, () => current ?? null)
       $.ui.status(statusOf(await modeOf($), model))
       if (current) {
         const row: Row = {
@@ -811,7 +902,7 @@ export const register: Register = (on, options) => {
 
   on('turn.step', async function* ($, e, next) {
     const isMain = e.agentId === undefined
-    const decision = isMain ? current : agents.get(e.agentId!)
+    const decision = isMain ? ((await read($, currentAtom)) ?? undefined) : agents.get(e.agentId!)
 
     // Haiku takes no effort setting. While effortless is on, it keeps the effort it set.
     const effortOwned = await read($, effortless)
@@ -846,6 +937,8 @@ export const register: Register = (on, options) => {
     // The atom read subscribes this render to the 1s tick; the time itself comes from the clock, since the
     // tick only starts at session.start and a hot reload skips that (a frozen tick showed a stale cache state).
     await read($, clockNow)
+    armTick($)
+    await read($, pinRev) // subscribes: the pin itself is read from the store, which does not
     const now: number = await $.clock.now()
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
@@ -876,6 +969,10 @@ export const register: Register = (on, options) => {
       ? `The cache went cold, so your next message re-reads all ${Math.round(offer.c.C / 1000)}k tokens: ${money('continue')}. A ${cap(live.compactModel)} summary first costs ${money('compact')}.`
       : 'The cache went cold. Your message is waiting.'
     const effortOn = await read($, effortless)
+    const isDisabling = await read($, disabling)
+    // While a compact arne started runs, an alert's actions give way to this.
+    const busy = (await read($, compacting)) ? <Text key="busy" color="subtle">summarizing…</Text> : undefined
+    const heavyGone = c ? (await read($, heavyDismissed)) === (c.warmUntil[c.model] ?? 0) : false
     const sample: Record<BandState, Parameters<typeof bandText>[0]> = {
       routing: { off: false, paused: false, routing: true, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 0, C: 0 },
       off: { off: true, paused: false, routing: false, model: 'claude-sonnet-5-5', warmLeftMs: 0, C: 0 },
@@ -970,30 +1067,46 @@ export const register: Register = (on, options) => {
           banner(
             'alert-effortless',
             'effortless is on: it sets effort too. Disable it and restart.',
-            <Button key="disable-effortless" variant="primary" label="Disable effortless" onPress={() => disableEffortless($)} />,
+            isDisabling ? (
+              <Text key="disabling" color="subtle">disabling…</Text>
+            ) : (
+              <Button key="disable-effortless" variant="primary" label="Disable effortless" onPress={() => disableEffortless($)} />
+            ),
           )}
         {heldText &&
-          banner('alert-held', coldLine, [
-            <Button key="send-anyway" plain label="Send as is" onPress={() => sendAnyway($)} />,
-            <Button key="compact-send" variant="primary" label="Summarize, then send" onPress={() => compactAndSend($)} />,
-          ])}
+          banner(
+            'alert-held',
+            coldLine,
+            busy ?? [
+              <Button key="send-anyway" plain label="Send as is" onPress={() => sendAnyway($)} />,
+              <Button key="compact-send" variant="primary" label="Summarize, then send" onPress={() => compactAndSend($)} />,
+            ],
+          )}
         {offer &&
           !heldText &&
-          banner('alert-cold', coldLine, [
-            <Button key="compact" variant="primary" label="Summarize" onPress={() => compactNow($, '')} />,
-            <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
-            <Button key="continue" plain role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
-          ])}
+          banner(
+            'alert-cold',
+            coldLine,
+            busy ?? [
+              <Button key="compact" variant="primary" label="Summarize" onPress={() => compactNow($, '')} />,
+              <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
+              <Button key="continue" plain role="dismiss" label="Dismiss" onPress={() => update($, coldDismissed, () => offer.c.warmUntil[offer.c.model] ?? 0)} />,
+            ],
+          )}
         {/* A big chat with a warm cache is never a reason for an alert (17p): only once it has gone cold. */}
-        {band.state === 'heavy' &&
+        {/* By size, not band.state: the band reads a cold chat as "cold" before "heavy", so that never matched here. */}
+        {!forced &&
           c &&
+          c.C >= live.heavyTokens &&
           left <= 0 &&
           !offer &&
+          !heavyGone &&
           banner(
             'alert-heavy',
             `Chat is ${chatK} tokens. Compacting with ${cap(live.compactModel)} costs $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}; resending the whole chat costs $${dollars(costContinue(c.C, c.model, false)).toFixed(2)}.`,
-            [
-              <Button key="dismiss" plain role="dismiss" label="Dismiss" onPress={() => undefined} />,
+            busy ?? [
+              // role="dismiss" only tells the surface how to draw it; the press itself hides the alert for this cold spell.
+              <Button key="dismiss" plain role="dismiss" label="Dismiss" onPress={() => update($, heavyDismissed, () => c.warmUntil[c.model] ?? 0)} />,
               <Button key="handoff" plain label="Handoff" onPress={(p: any) => handoffNow($, p?.surface)} />,
               <Button key="compact-send" variant="primary" label="Summarize, then continue" onPress={() => compactThenContinue($)} />,
             ],
@@ -1118,15 +1231,16 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The settings pane: a label and a segmented control per row. A press sets that value through $.config.set,
-  // so the pane and /config never disagree.
+  // The settings pane: a label and a segmented control per row. A press shows the new value at once, then
+  // writes it through $.config.set (setOption), so the pane and /config never disagree.
   on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
+    await read($, liveRev) // subscribes: the rows read `live`
     const { Box, Button, Text } = $.ui.resolve(e)
     // Narrow, as in the band: the short effort names, and a row's segments drop under its label.
     const narrow = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80) < 72
     const gui = e.surface !== 'terminal'
     const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
-      const set = (value: unknown) => $.config.set({ key: `arne.${key}`, value })
+      const set = (value: unknown) => setOption($, key, value)
       return (
         <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
           <Text>{label}</Text>
@@ -1177,7 +1291,7 @@ export const register: Register = (on, options) => {
         </Box>
         <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
           <Text color="inactive">Also in /config.</Text>
-          <Button key="open-stats" plain label="Stats" onPress={() => $.ui.open({ id: STATS, title: 'arne stats' })} />
+          <Button key="open-stats" plain label="Stats" onPress={() => openStats($)} />
         </Box>
       </Box>
     )
@@ -1189,7 +1303,8 @@ export const register: Register = (on, options) => {
     const cols = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80)
     const gui = e.surface !== 'terminal'
     const period = (await read($, statsPeriod)) as Period
-    const st = await statsFor($, period)
+    // Parsed once at open (openStats); a pane drawn without that open (a restore) parses here.
+    const st = (await read($, statsData))?.[period] ?? (await statsFor($, period))
     const usd = (v: number) => `$${v.toFixed(2)}`
     // Bars as text, so they follow the theme: one accent for arne, subtle for the baselines.
     const room = Math.max(10, Math.min(40, cols - 24))

@@ -2,21 +2,38 @@ import { expect, mock, test } from 'claude-code/testing'
 
 // The session beneath arne: a model /model moves, prompts that enter, requests that go out.
 function engine(on: any, start = 'claude-opus-5-5') {
-  const s = { model: start, ran: [] as string[], entered: [] as string[], sent: [] as string[], efforts: [] as unknown[], usage: null as unknown, statuses: [] as string[] }
+  const s = {
+    model: start,
+    ran: [] as string[],
+    entered: [] as string[],
+    sent: [] as string[],
+    efforts: [] as unknown[],
+    usage: null as unknown,
+    statuses: [] as string[],
+    toasts: [] as string[],
+    deny: undefined as string | undefined, // set it and every config write is refused
+    compactGate: undefined as Promise<void> | undefined, // set it and /compact waits for it
+  }
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on)
   on('ui.status', (_$: unknown, e: unknown) => {
     s.statuses.push(JSON.stringify(e ?? null))
     return { value: undefined }
   })
+  on('ui.toast', (_$: unknown, e: { text: string }) => {
+    s.toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('config.set', (_$: unknown, e: { value: unknown }) => (s.deny ? { deny: s.deny } : { value: e.value }))
   on('classic.PostModelSwitch', () => ({}))
   on('session.model', () => ({ value: s.model }))
   on('prompt.submit', (_$: unknown, e: { text: string }) => {
     s.entered.push(e.text)
     return { text: e.text }
   })
-  on('command.run', (_$: unknown, e: { command: string; args: string }) => {
+  on('command.run', async (_$: unknown, e: { command: string; args: string }) => {
     s.ran.push(`/${e.command} ${e.args}`)
+    if (e.command === 'compact' && s.compactGate) await s.compactGate
     if (e.command === 'model') s.model = e.args
     return { text: 'ok' }
   })
@@ -168,7 +185,6 @@ test('a pin of xhigh passes the default ceiling and is kept (17h)', async ($: an
 
 test('the Judge row set to Laya sets backend laya, and says Laya runs here (17h)', async ($: any, on: any) => {
   engine(on)
-  on('config.set', (_$: unknown, e: { value: unknown }) => ({ value: e.value }))
   // The Laya segment's press calls this same set; the harness does not reach the pane's buttons.
   await $.config.set({ key: 'arne.backend', value: 'laya' })
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend laya')
@@ -191,7 +207,6 @@ test('a pin from the band or /arne pin moves /model at once, before any prompt (
 
 test('the band never prefixes "arne:", says off in words, and the settings pane is grouped like /config (17b)', async ($: any, on: any) => {
   engine(on, 'claude-sonnet-5-5')
-  on('config.set', (_$: unknown, e: { value: unknown }) => ({ value: e.value }))
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
   expect(await band.find({ type: 'Text', text: /arne:/ })).toBeUndefined()
   await $.command.run({ command: 'arne', args: 'off' })
@@ -383,4 +398,97 @@ test('a finished turn logs its usage, and Stats and /arne stats show the estimat
   const text = (await $.command.run({ command: 'arne', args: 'stats' })).text
   expect(text).toContain('estimate')
   expect(text).toContain('Today: $0.02 spent over 1 turns')
+})
+
+// --- 17u: every button answers on the press ---
+
+const band80 = { plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } } as const
+
+test('"Turn on" shows the on band at once, though arne\'s own config write skips its hook (17u)', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  await $.command.run({ command: 'arne', args: 'off' })
+  const band = await $.ui.mount(band80)
+  expect(await band.find({ type: 'Text', text: 'off' })).toBeDefined()
+  await band.press({ key: 'auto' })
+  await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'off' }).catch(() => undefined)).toBeUndefined()
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('arne on')
+})
+
+test('a refused config write puts the band back and says so (17u)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  const band = await $.ui.mount(band80)
+  await band.press({ key: 'band' })
+  s.deny = 'a managed setting owns arne.auto'
+  await band.press({ key: 'auto' })
+  await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'off' }).catch(() => undefined)).toBeUndefined()
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('arne on')
+  expect(s.toasts.join('\n')).toContain('a managed setting owns arne.auto')
+})
+
+test('the band countdown ticks without a session start, as after a reload (17u)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  s.usage = { input_tokens: 50_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 'k1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  const band = await $.ui.mount(band80)
+  await $.command.run({ command: 'arne', args: 'backend heuristic' })
+  const before = (await band.find({ type: 'Text', text: /cache warm \d+m/ })).text
+  await clock.advance(2 * 60_000) // inside the 5m TTL: still warm, two minutes fewer
+  for (let i = 0; i < 3; i++) await clock.settle()
+  const after = (await band.find({ type: 'Text', text: /cache warm \d+m/ })).text
+  expect(after).not.toBe(before)
+})
+
+// A cold 160k Sonnet chat: the cold alert, and once that is dismissed, the heavy one.
+async function coldHeavy($: any, s: any, clock: any) {
+  s.usage = { input_tokens: 160_000, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 'c1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  await clock.advance(2 * 60 * 60_000)
+}
+
+test('heavy "Dismiss" hides the banner (17u)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  await coldHeavy($, s, clock)
+  const band = await $.ui.mount(band80)
+  await band.press({ key: 'continue' }) // the cold alert's Dismiss
+  expect(await band.find({ type: 'Text', text: /^Chat is 160k tokens/ })).toBeDefined()
+  await band.press({ key: 'dismiss' })
+  expect(await band.find({ type: 'Text', text: /^Chat is/ }).catch(() => undefined)).toBeUndefined()
+})
+
+test('a double press on "Summarize" runs one compact, and the banner says summarizing (17u)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  await coldHeavy($, s, clock)
+  let release = () => {}
+  s.compactGate = new Promise<void>(r => (release = r))
+  const band = await $.ui.mount(band80)
+  const first = band.press({ key: 'compact' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  await band.press({ key: 'compact' }).catch(() => undefined)
+  expect(await band.find({ type: 'Text', text: 'summarizing…' })).toBeDefined()
+  release()
+  await first
+  expect(s.ran.filter(r => r.startsWith('/compact'))).toEqual(['/compact '])
+})
+
+test('/arne unpin redraws the band (17u)', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  await $.command.run({ command: 'arne', args: 'pin opus high' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  const band = await $.ui.mount(band80)
+  await band.press({ key: 'band' })
+  expect(await band.find({ type: 'Text', text: 'pinned' })).toBeDefined()
+  await $.command.run({ command: 'arne', args: 'unpin' })
+  expect(await band.find({ type: 'Text', text: 'pinned' }).catch(() => undefined)).toBeUndefined()
+})
+
+test('/arne backend sets the backend that routing reads (17u)', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  await $.command.run({ command: 'arne', args: 'backend heuristic' })
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend heuristic')
 })
