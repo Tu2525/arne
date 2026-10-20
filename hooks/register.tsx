@@ -132,9 +132,10 @@ async function compactNow($: any, note: string): Promise<boolean> {
 }
 
 // --- Handoff (17o, 17w) ---
-// Haiku summarizes the chat into arne-handoff.md and the clipboard. Then /clear starts a fresh chat in
-// place, pinned to `tier`, whose first message is the summary. The old chat stays in history; no plugin
-// call archives a desktop chat, so that stays the person's click. One at a time (the compacting atom).
+// Haiku summarizes the chat into arne-handoff.md and the clipboard. Setting Handoff = newchat (default): a
+// toast asks the person to open a new chat on `tier` and paste; no plugin call opens a chat or pastes into
+// one. Handoff = clear: /clear starts a fresh chat in place, pinned to `tier`, whose first message is the
+// summary. One at a time (the compacting atom).
 const HANDOFF_FILE = 'arne-handoff.md'
 const ARCHIVE_DIR = 'arne-archive'
 const SUMMARY_SYSTEM = 'Summarize this coding conversation for its next turn: goal, decisions and why, files changed (paths), exact errors, open questions, next step. Plain text, under 1500 words.'
@@ -165,11 +166,19 @@ Summary of an earlier chat (written by ${shortModel(live.compactModel)} for arne
 ${r.text}
 `
     await $.fs.write(HANDOFF_FILE, text).catch(() => undefined)
+    step = 'the clipboard'
+    const copied = await $.ui.copy({ text, surface }).catch(() => undefined)
+    if (copied?.isCopied === false) throw new Error('copy')
+    if (live.handoff !== 'clear') {
+      // No plugin call opens a new chat or pastes into one, so the old chat is left alone.
+      await update($, handedOff, () => tier)
+      $.ui.toast(`Handoff copied. Open a new chat on ${shortModel(MODEL[tier])} and paste. This chat is untouched.`)
+      return
+    }
     // The whole old chat, kept as a file before /clear: the sidebar history alone is not a copy.
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
     const transcript = said.map((m: any) => `## ${m.role ?? 'message'}\n\n${m.text}`).join('\n\n')
     await $.fs.write(`${ARCHIVE_DIR}/handoff-${stamp}.md`, `# Chat before handoff\n\n${transcript}\n`).catch(() => undefined)
-    await $.ui.copy({ text, surface }).catch(() => undefined)
     step = '/clear'
     await $.command.run({ command: 'clear', args: '' })
     await update($, cache, () => null) // the new chat has no cache yet
@@ -276,6 +285,7 @@ type Live = {
   heavyTokens: number
   continueAfterCompact: boolean
   subagents: string // 17y: the dearest model a subagent may run on (haiku, sonnet, opus), or off
+  handoff: string // newchat: copy the summary and ask for a new chat; clear: /clear this chat and send it
 }
 const DEFAULTS: Live = {
   auto: true,
@@ -289,6 +299,7 @@ const DEFAULTS: Live = {
   heavyTokens: 150_000,
   continueAfterCompact: true,
   subagents: 'off', // experimental: routing a subagent is opt-in
+  handoff: 'newchat',
 }
 // 17y: Subagents was On/Off before it became a ceiling; On reads as Sonnet, Off as off. Auto is no ceiling (Opus).
 const subCeiling = (v: unknown) => (v === false || v === 'off' ? 'off' : v === 'auto' || TIER_OF[String(v)] ? String(v) : v === true ? 'sonnet' : 'auto')
@@ -780,6 +791,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
           choice('Strongest model', 'modelCeiling', MODELS),
           choice('Lowest effort', 'effortFloor', EFFORTS),
           choice('Highest effort', 'effortCeiling', EFFORTS),
+          choice('Handoff', 'handoff', [{ value: 'newchat', label: 'New chat' }, { value: 'clear', label: 'Clear' }]),
         ])}
       </Box>
       <Box key="settings-notes" flexDirection="column">

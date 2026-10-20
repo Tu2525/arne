@@ -335,20 +335,31 @@ test('a sticky cheaper pick shows stay, switch and handoff with their costs; one
   expect(await band.find({ type: 'Text', text: /^Switching in this chat re-reads all 150k tokens\. A new chat starts from a Haiku summary\.$/ })).toBeDefined()
   await Promise.all([band.press({ key: 'handoff-row' }).catch(() => undefined), band.press({ key: 'handoff-row' }).catch(() => undefined)])
   for (let i = 0; i < 3; i++) await clock.settle()
-  expect(s.ran.filter(r => r.startsWith('/clear')).length).toBe(1)
-  expect(s.model).toBe('claude-sonnet-5-5')
-  expect(s.entered.at(-1)).toContain('GOAL: the parser')
+  expect(s.ran.filter(r => r.startsWith('/clear')).length).toBe(0)
+  expect(s.model).toBe('claude-opus-5-5')
   expect([...disk.values()].join('')).toContain('GOAL: the parser')
-  expect(s.toasts.at(-1)).toContain('Old chat saved in history')
+  expect(s.toasts.at(-1)).toContain('Open a new chat on Sonnet')
 })
 
-test('/arne handoff haiku runs the summary, /clear, /model haiku and sends the summary (17w)', async ($: any, on: any) => {
+test('Handoff set to Clear runs /clear, moves the model and sends the summary (17w)', async ($: any, on: any) => {
   const { s, clock } = await stickyOpus($, on)
+  await $.config.set({ key: 'arne.handoff', value: 'clear' })
+  for (let i = 0; i < 3; i++) await clock.settle()
   await $.command.run({ command: 'arne', args: 'handoff haiku' })
   for (let i = 0; i < 3; i++) await clock.settle()
   expect(s.ran.filter(r => r.startsWith('/clear')).length).toBe(1)
   expect(s.model).toBe('claude-haiku-5-5')
   expect(s.entered.at(-1)).toContain('GOAL: the parser')
+})
+
+test('/arne handoff haiku writes the summary to the clipboard and file, and leaves this chat uncleared (17w)', async ($: any, on: any) => {
+  const { s, clock, disk } = await stickyOpus($, on)
+  await $.command.run({ command: 'arne', args: 'handoff haiku' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(s.ran.filter(r => r.startsWith('/clear')).length).toBe(0)
+  expect(s.model).toBe('claude-opus-5-5')
+  expect([...disk.values()].join('')).toContain('GOAL: the parser')
+  expect(s.toasts.at(-1)).toContain('Open a new chat on Haiku')
   expect((await $.command.run({ command: 'arne', args: 'handoff gpt' })).text).toContain('Usage')
 })
 
@@ -1000,8 +1011,8 @@ test('Settings fits the band: side by side from 90 columns in at most 12 rows, s
   const wide = await $.ui.mount(band100)
   await $.command.run({ command: 'arne', args: 'settings' })
   expect((await wide.find({ key: 'settings-cards' })).props.flexDirection).toBe('row')
-  // 12 rows is the main panel with its costs table, which fits under the app's half-window cap.
-  expect(rowsOf(await wide.find({ key: 'settings-view' }))).toBeLessThanOrEqual(12)
+  // 13 rows: the Limits card's five choice rows. Unchecked in the live app: confirm it fits the half-window cap.
+  expect(rowsOf(await wide.find({ key: 'settings-view' }))).toBeLessThanOrEqual(13)
   const notes = (await wide.findAll({ type: 'Text' })).filter((x: any) => x.props.size === 'footnote')
   expect(notes.length).toBeGreaterThan(0)
   for (const note of notes) expect(note.text.length).toBeLessThanOrEqual(96)
