@@ -77,8 +77,6 @@ const compactSendingAtom = atom({ plugin: 'arne', key: 'compactSending' } as con
 const handedOff = atom({ plugin: 'arne', key: 'handedOff' } as const, null)
 const handoffMenu = atom({ plugin: 'arne', key: 'handoffMenu' } as const, false)
 // This chat's subagents (17x): how many arne moved to each tier, kept on their model, or ran as asked.
-// The "Ratings train Laya" line was seen this chat (closing the panel marks it).
-const layaHinted = atom({ plugin: 'arne', key: 'layaHinted' } as const, false)
 const subCount = atom({ plugin: 'arne', key: 'subCount' } as const, null)
 type SubCount = Partial<Record<Tier | 'kept' | 'asked', number>>
 const countSpawn = ($: any, k: keyof SubCount) => update($, subCount, (c: SubCount | null) => ({ ...c, [k]: ((c ?? {})[k] ?? 0) + 1 }))
@@ -163,7 +161,6 @@ ${r.text}
     await $.command.run({ command: 'clear', args: '' })
     await update($, cache, () => null) // the new chat has no cache yet
     await update($, subCount, () => null)
-    await update($, layaHinted, () => false)
     step = '/model'
     // Pinned after the clear: a pin belongs to the chat it was set in.
     await setPinPart($, { tier }, false)
@@ -672,9 +669,19 @@ async function openView($: any, view: View) {
   await update($, whyOpen, () => true)
 }
 
+// A view's header: "‹ Back" to the main panel, then the view's title.
+function viewHead($: any, { Box, Button, Text }: any, title: string) {
+  return (
+    <Box key="view-head" flexDirection="row" alignItems="center" gap={1}>
+      <Button key="back" plain label="‹ Back" onPress={() => update($, panelView, () => 'main')} />
+      <Text weight="semibold">{title}</Text>
+    </Box>
+  )
+}
+
 // The panel's Settings view: a label and a segmented control per row. A press shows the new value at
 // once, then writes it through $.config.set (setOption), so the panel and /config never disagree.
-function settingsView($: any, { Box, Button, Text }: any, narrow: boolean, gui: boolean) {
+function settingsView($: any, { Box, Button, Text }: any, gui: boolean) {
   const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
     const set = (value: unknown) => setOption($, key, value)
     return (
@@ -692,54 +699,57 @@ function settingsView($: any, { Box, Button, Text }: any, narrow: boolean, gui: 
       </Box>
     )
   }
-  const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
-  // Narrow, as in the band: the short effort names, and a row's segments drop under its label.
-  const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: (narrow ? EFFORT_LABEL_SHORT : EFFORT_LABEL)[v] }))
-  return (
-    <Box flexDirection="column" gap={1}>
-      <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
-        <Text bold>Settings</Text>
-        <Button key="back" plain label="Back" onPress={() => update($, panelView, () => 'main')} />
+  // Each group: a caption over a bordered card of rows, as in the design's inset lists.
+  const card = (title: string, rows: unknown[], note?: string) => (
+    <Box key={`card-${title}`} flexDirection="column">
+      <Text size="footnote" dimColor>{title}</Text>
+      <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
+        {rows as any}
       </Box>
-      {/* Each group: a caption over a bordered card of rows, as in the design's inset lists. */}
-      <Box flexDirection="column">
-        <Text color="subtle">Routing</Text>
-        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
-          {choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
-          {choice('Judge', 'backend', [
-            { value: 'heuristic', label: 'Rules only' },
+      {note && <Text size="footnote" dimColor>{note}</Text>}
+    </Box>
+  )
+  const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
+  // Always the short effort names, so a row never wraps.
+  const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: EFFORT_LABEL_SHORT[v] ?? v }))
+  return (
+    <Box key="settings-view" flexDirection="column" gap={1}>
+      {viewHead($, { Box, Button, Text }, 'Settings')}
+      {card(
+        'Routing',
+        [
+          choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }]),
+          choice('Judge', 'backend', [
+            { value: 'heuristic', label: 'Rules' },
             { value: 'haiku', label: 'Haiku' },
             { value: 'laya', label: 'Laya' },
-          ])}
-          {choice('Subagents', 'subagents', [{ value: true, label: 'On' }, { value: false, label: 'Off' }])}
-        </Box>
-        {live.backend === 'laya' && <Text color="subtle">Laya runs on this machine through laya-serve. Until it answers, Haiku judges.</Text>}
-      </Box>
-      <Box flexDirection="column">
-        <Text color="subtle">Range</Text>
-        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
-          {choice('Cheapest model', 'modelFloor', MODELS)}
-          {choice('Strongest model', 'modelCeiling', MODELS)}
-          {choice('Lowest effort', 'effortFloor', EFFORTS)}
-          {choice('Highest effort', 'effortCeiling', EFFORTS)}
-        </Box>
-      </Box>
-      <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}>
-        <Text color="inactive">Also in /config.</Text>
-        <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />
-      </Box>
+            { value: 'jev', label: 'Jev' },
+          ]),
+          choice('Subagents', 'subagents', [{ value: true, label: 'On' }, { value: false, label: 'Off' }]),
+        ],
+        'Laya is a judge that runs on this machine. Your Good call and Wrong call ratings train it.',
+      )}
+      {card('Limits', [
+        choice('Cheapest model', 'modelFloor', MODELS),
+        choice('Strongest model', 'modelCeiling', MODELS),
+        choice('Lowest effort', 'effortFloor', EFFORTS),
+        choice('Highest effort', 'effortCeiling', EFFORTS),
+      ])}
+      <Text size="footnote" dimColor>Also in /config.</Text>
     </Box>
   )
 }
 
+const STATS_EMPTY: Record<Period, string> = { today: 'No turns today yet.', week: 'No turns in the last 7 days yet.', all: 'No turns yet.' }
+
 // The panel's Stats view (17q): what arne saved against running every turn on Opus or Sonnet at medium.
-// An estimate, said so. Back returns to Settings.
+// An estimate, said so. Back returns to the main panel.
 async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: boolean) {
   const period = (await read($, statsPeriod)) as Period
   // Parsed once at open (openView); a panel drawn without that open (a reload) parses here.
   const st = (await read($, statsData))?.[period] ?? (await statsFor($, period))
   const usd = (v: number) => `$${v.toFixed(2)}`
-  // Bars as text, so they follow the theme: one accent for arne, subtle for the baselines.
+  // Bars as text, so they follow the theme: one accent for arne, dim for the baselines.
   const room = Math.max(10, Math.min(40, cols - 24))
   const max = Math.max(st.spent, st.sonnet, st.opus, 1e-9)
   const bar = (v: number) => '█'.repeat(Math.max(v > 0 ? 1 : 0, Math.round((v / max) * room)))
@@ -747,16 +757,16 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
     const t = savedText(st.spent, base)
     return (
       <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1} flexGrow={1}>
-        <Text color="subtle">{`Against ${name}`}</Text>
-        <Text bold>{t.headline}</Text>
-        <Text color="subtle">{t.sub}</Text>
+        <Text size="footnote" dimColor>{`Against ${name}`}</Text>
+        <Text weight="semibold" tabular>{t.headline}</Text>
+        <Text size="footnote" dimColor tabular>{t.sub}</Text>
       </Box>
     )
   }
   return (
-    <Box flexDirection="column" gap={1}>
+    <Box key="stats-view" flexDirection="column" gap={1}>
       <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
-        <Text bold>Stats</Text>
+        {viewHead($, { Box, Button, Text }, 'Stats')}
         <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
           {PERIODS.map(([p, label]) =>
             p === period ? (
@@ -765,11 +775,13 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
               <Button key={`period-${p}`} plain label={label} onPress={() => update($, statsPeriod, () => p)} />
             ),
           )}
-          <Button key="back" plain label="Back" onPress={() => update($, panelView, () => 'settings')} />
         </Box>
       </Box>
       {st.turns === 0 && st.lines.length === 0 ? (
-        <Text color="subtle">No turns with usage in this period yet.</Text>
+        <Box flexDirection="column">
+          <Text>{STATS_EMPTY[period]}</Text>
+          <Text size="footnote" dimColor>Once there are, this shows what arne spent next to the same turns on Opus or Sonnet at medium effort. It is an estimate.</Text>
+        </Box>
       ) : (
         <Box flexDirection="column" gap={1}>
           <Box flexDirection={cols < 60 ? 'column' : 'row'} gap={1}>
@@ -777,33 +789,33 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
             {tile('Sonnet · medium', st.sonnet)}
           </Box>
           <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
-            {([['With arne', st.spent, 'claude'], ['Sonnet · medium', st.sonnet, 'subtle'], ['Opus · medium', st.opus, 'subtle']] as const).map(([label, v, color]) => (
+            {([['With arne', st.spent], ['Sonnet · medium', st.sonnet], ['Opus · medium', st.opus]] as const).map(([label, v]) => (
               <Box key={`bar-${label}`} flexDirection="column">
                 <Box flexDirection="row" justifyContent="space-between">
-                  <Text color={label === 'With arne' ? undefined : 'subtle'}>{label}</Text>
-                  <Text>{usd(v)}</Text>
+                  <Text dimColor={label !== 'With arne'}>{label}</Text>
+                  <Text tabular>{usd(v)}</Text>
                 </Box>
-                <Text color={color}>{bar(v)}</Text>
+                {label === 'With arne' ? <Text color="claude">{bar(v)}</Text> : <Text dimColor>{bar(v)}</Text>}
               </Box>
             ))}
           </Box>
           <Box flexDirection="column">
-            <Text color="subtle">Where it went</Text>
+            <Text size="footnote" dimColor>Where it went</Text>
             <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
               {st.lines.map(l => (
                 <Box key={`line-${l.label}`} flexDirection="row" columnGap={2}>
                   <Box flexGrow={1}>
                     <Text>{l.label}</Text>
                   </Box>
-                  <Text color="subtle">{l.label === 'Switches and summaries' ? String(l.count) : `${l.count} turn${l.count === 1 ? '' : 's'}`}</Text>
-                  <Text>{usd(l.cost)}</Text>
+                  <Text dimColor tabular>{l.label === 'Switches and summaries' ? String(l.count) : `${l.count} turn${l.count === 1 ? '' : 's'}`}</Text>
+                  <Text tabular>{usd(l.cost)}</Text>
                 </Box>
               ))}
             </Box>
           </Box>
+          <Text size="footnote" dimColor>An estimate: each turn's real tokens, priced again as if every turn ran on Opus at medium effort, or on Sonnet at medium effort. Model switches and summaries count against arne.</Text>
         </Box>
       )}
-      <Text color="subtle">An estimate: each turn's real tokens, priced again as if every turn ran on Opus at medium effort, or on Sonnet at medium effort. Model switches and summaries count against arne.</Text>
     </Box>
   )
 }
@@ -866,7 +878,6 @@ export const register: Register = (on, options) => {
     await update($, compactSendingAtom, () => false)
     await update($, disabling, () => false)
     await update($, subCount, () => null)
-    await update($, layaHinted, () => false)
     await $.command.register({
       name: 'arne',
       description: 'Auto model and effort routing: on, off, pin, unpin, handoff, subagents, why, log, stats, backend, debug',
@@ -1206,7 +1217,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    await read($, liveRev) // subscribes: the subagent toggle reads `live` (17x)
+    await read($, liveRev) // subscribes: Settings reads `live`
     const l = await read($, last)
     const c = await read($, cache)
     const forced = await read($, shown)
@@ -1219,37 +1230,37 @@ export const register: Register = (on, options) => {
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
     if (left > 0) armTick($) // after a reload the tick is gone; a warm band starts it again
-    const { Box, Button, Select, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     // The width the band gets, re-read on every render: AbovePrompt's bodyColumns, else the viewport's columns.
     const cols = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80)
     const narrow = cols < 72
     // The desktop draws a Button as its own native button and flattens Text children into one plain label,
     // so there the resting line is styled Text in a row and only the chevron is the button.
     const gui = e.surface !== 'terminal'
-    // A cold chat under coldTokens is cheap to re-warm: no offer. A dismissal lasts until the cache warms again.
     const heldText = await read($, held)
     const pin = (await settings($)).pin
-    const whyIsOpen = await read($, whyOpen)
+    const open = await read($, whyOpen) // the whyOpen atom holds "panel open"
     const picker = await read($, appPicker)
     // Before the first turn (a new chat, a reload) no turn has said the model yet: ask the session (2).
     const running: string | null = (await read($, sessionModel)) ?? (await Promise.resolve($.session.model()).catch(() => null)) ?? null
+    // A cold chat under coldTokens is cheap to re-warm: no offer. A dismissal lasts until the cache warms again.
     const offer = await coldOffer($, now)
     const pinned = Boolean(pin?.tier || pin?.effort)
     const thankedKey = await read($, thanked)
     const judgeDown = await read($, layaDown)
-    const cap = (s: string) => s[0].toUpperCase() + s.slice(1)
-    // The cold alert's copy: how long the cache has been cold, and what a summary costs against a plain resend.
-    const money = (a: 'compact' | 'continue') => {
+    const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+    const usd = (u: number) => (dollars(u) < 0.01 ? 'under $0.01' : `$${dollars(u).toFixed(2)}`)
+    const chatK = c ? `${Math.round(c.C / 1000)}k` : ''
+    // The price an alert's button spends, from the cold offer's rows.
+    const price = (a: 'compact' | 'continue') => {
       const row = offer?.rows.find(x => x.action === a)
       return row ? `$${dollars(row.first).toFixed(2)}` : ''
     }
-    const coldLine = offer
-      ? `The cache went cold, so your next message re-reads all ${Math.round(offer.c.C / 1000)}k tokens: ${money('continue')}. A ${cap(live.compactModel)} summary first costs ${money('compact')}.`
-      : 'The cache went cold. Your message is waiting.'
+    const priced = (label: string, p: string) => (p ? `${label} · ${p}` : label)
     const effortOn = await read($, effortless)
     const isDisabling = await read($, disabling)
     // While a compact arne started runs, an alert's actions give way to this.
-    const busy = (await read($, compacting)) ? <Text key="busy" color="subtle">summarizing…</Text> : undefined
+    const busy = (await read($, compacting)) ? <Text key="busy" dimColor>summarizing…</Text> : undefined
     const heavyGone = c ? (await read($, heavyDismissed)) === (c.warmUntil[c.model] ?? 0) : false
     const sample: Record<BandState, Parameters<typeof bandText>[0]> = {
       routing: { off: false, paused: false, routing: true, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 0, C: 0 },
@@ -1276,14 +1287,9 @@ export const register: Register = (on, options) => {
         })
     // At rest the band is one pressable line, read like Claude's limit banner: the arne mark, model and
     // effort, the reason, and the cache on the right. Pressing it opens a small panel under it.
-    // Model and effort words keep a fixed width, so nothing moves sideways between turns.
-    const open = whyIsOpen // the whyOpen atom now holds "panel open"
-    // Closing the panel also clears the handoff note.
     const view = (await read($, panelView)) as View
     const toggle = async () => {
-      // The Laya line shows on the first open of a chat only: closing the panel marks it seen (4).
-      if (open) await update($, layaHinted, () => true)
-      // Closing the panel returns it to its main rows.
+      // Closing the panel returns it to its main rows and clears the handoff note.
       if (open) await update($, panelView, () => 'main')
       await update($, whyOpen, o => !o)
       await update($, handedOff, () => null)
@@ -1293,30 +1299,27 @@ export const register: Register = (on, options) => {
     const runModel = realModel ?? MODEL.M
     const modelWord = shortModel(runModel)
     const effortWord = tierOf(runModel) === 'S' ? '' : ((mode === 'on' && l ? l.effort : await read($, appEffort)) ?? '')
+    const effortName = effortWord ? ((narrow ? EFFORT_LABEL_SHORT : EFFORT_LABEL)[effortWord] ?? effortWord) : ''
+    const lineText = realModel ? `${modelWord}${effortName ? ` · ${effortName}` : ''}` : 'Auto'
     // A decision the chat's cache holds back: the band says which model it wanted and that the switch waits.
     const waiting = l?.waitFor && tierOf(l.waitFor) !== tierOf(l.model) ? l.waitFor : undefined
     const reason =
       band.state === 'routing'
         ? 'routing…'
-        : waiting
-          ? `${shortModel(waiting)} fits better; switching waits for the cache`
-          : l
-            ? plainReason(l.reason)
-            : ''
-    // Auto picked this model and effort (no pin, no wait on the cache): the band says it was routed.
-    const routedNow = Boolean(l) && !pinned && !waiting
-    const modelText = `${routedNow ? 'auto · ' : ''}${modelWord}${effortWord ? ` · ${effortWord}` : ''}${routedNow && !narrow ? ' (routed)' : ''}`
-    // The resting line with no decision yet: the model and effort the chat runs, never a bare "auto" (2).
-    const decided = Boolean(l) || band.state === 'routing'
-    const lineText = decided ? modelText : realModel ? `${pinned ? '' : 'auto · '}${modelText}` : 'auto'
-    const minutes = Math.ceil(left / 60_000)
-    const chatK = c ? `${Math.round(c.C / 1000)}k` : ''
-    // The cache text in three lengths; the resting line picks the longest that fits (fitRest).
-    const cacheLong = c ? (left > 0 ? `cache warm ${minutes}m · ${chatK}` : `cache cold · ${chatK}`) : ''
-    const cacheMid = c ? (left > 0 ? `cache ${minutes}m` : 'cache cold') : ''
-    const cacheShort = c ? (left > 0 ? `${minutes}m` : 'cold') : ''
-    const cacheWords = cacheLong
+        : pinned
+          ? 'pinned'
+          : waiting
+            ? `${shortModel(waiting)} fits; waiting for the cache`
+            : l
+              ? plainReason(l.reason)
+              : ''
+    // The cache in minutes only; the dot carries warm, cooling or cold.
+    const cacheText = c ? (left > 0 ? `${Math.ceil(left / 60_000)}m` : 'cold') : ''
     const cool = left > 0 && left < 5 * 60_000
+    const dotColor = left <= 0 ? undefined : cool ? 'warning' : 'success'
+    // The resting line at this width: the head never shrinks, the reason fills the rest.
+    // The card's border and padding take 4 columns, the chevron 2, the cache dot 2, the arne mark 2.
+    const rest = fitRest(cols - (c ? 10 : 8), `arne  ${lineText}`, reason, [cacheText])
     // What the last turn cost: its output and cache reads at the tier's price. ponytail: leaves out uncached input.
     const lastTier = l ? tierOf(l.model) : undefined
     const lastCost = l && lastTier ? dollars(PRICE[lastTier] * (l.out * OUT + l.cacheRead * READ)) : 0
@@ -1329,84 +1332,82 @@ export const register: Register = (on, options) => {
           <Button key={`${key}-${o.value}`} plain label={o.label} onPress={() => pick(o.value)} />
         ),
       )
-    // An alert row: the message on the left, its actions on the right.
-    // Its buttons drop under the message, aligned right, when there is no room beside it.
-    const banner = (key: string, message: string, actions: unknown) => (
-      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2} borderStyle="round" borderColor="warning" paddingX={gui ? undefined : 1}>
-        <Text>{message}</Text>
-        <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
+    // An alert: a semibold headline over one dim sentence, the actions on the right in macOS order
+    // (dismiss first, the primary last). The actions drop under the text when there is no room beside it.
+    const banner = (key: string, headline: string, sentence: string, actions: unknown) => (
+      <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={2} borderStyle="round" borderColor="warning" paddingX={gui ? undefined : 1}>
+        <Box flexDirection="column" flexShrink={1}>
+          <Text weight="semibold">{headline}</Text>
+          <Text size="footnote" dimColor>{sentence}</Text>
+        </Box>
+        <Box key={`${key}-actions`} flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
           {actions as any}
         </Box>
       </Box>
     )
-    const lastNote = lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''
-    // The resting line at this width: the head never shrinks, the reason fills the rest, the cache steps down.
-    const head = `arne  ${lineText}`
-    // The card's border and padding take 4 columns, the chevron 2, the cache dot 2, the arne mark 2.
-    const rest = fitRest(cols - (c ? 10 : 8), head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
-    const why = judgeDown
-      ? 'Laya not running, Haiku judged.'
-      : !l
-        ? 'No decision yet.'
-        : pinned
-        ? 'Pinned. arne keeps your pick until you choose Auto.'
-        : waiting
-          ? `${cap(plainReason(l.reason))}, so ${shortModel(waiting)} fits better. Switching now re-reads ${chatK} tokens, so arne stays on ${modelWord} until the cache cools.${lastNote}`
-          : `${modelWord} because ${plainReason(l.reason)}.${lastNote}`
+    const name = (t: Tier) => shortModel(MODEL[t])
     // 17w: a cheaper tier fits but switching on the warm cache does not pay, so the panel prices the three
     // ways on from coldAdvice: stay, switch in this chat, or hand off to a fresh chat on that tier.
     const want = waiting ? tierOf(waiting) : undefined
     const doneTo = await read($, handedOff)
-    const name = (t: Tier) => shortModel(MODEL[t])
-    let costs: { key: string; label: string; money: string; best: boolean; tier?: Tier }[] = []
+    let costs: { key: string; label: string; now: string; each: string; note: string; tier?: Tier }[] = []
     if (c && want && !pinned && !doneTo && left > 0 && PRICE[want] < PRICE[c.model] && planSwitch({ decided: want, chat: c.model, C: c.C, warmUntil: c.warmUntil, now }).why === 'sticky') {
       const rows = coldAdvice(c.C, c.model, c.warmUntil, now).rows
       const stay = rows.find(r => r.action === 'continue')!
       const sw = rows.find(r => r.action === 'switch' && r.to === want)!
       const ho = rows.find(r => r.action === 'handoff' && r.to === want)!
       const best = [stay, sw, ho].reduce((a, b) => (overTurns(b) < overTurns(a) ? b : a))
-      const usd = (u: number) => (dollars(u) < 0.01 ? 'under $0.01' : `$${dollars(u).toFixed(2)}`)
       const payoff = (r: CostRow) => {
+        if (r === stay) return ''
         const n = paysOffAfter(r, stay)
-        return n === undefined ? " · doesn't pay off soon" : n === 0 ? ' · cheaper from the start' : ` · pays off after ${n} turn${n === 1 ? '' : 's'}`
+        return n === undefined ? "doesn't pay off soon" : n === 0 ? 'cheaper from the start' : `pays off in ${n} turn${n === 1 ? '' : 's'}`
       }
-      const money = (r: CostRow, note = '') => `${usd(r.first)} now${note}, ${usd(r.after)} a turn${r === stay ? '' : payoff(r)}`
-      costs = [
-        { key: 'stay', label: `Stay on ${name(c.model)}`, money: money(stay), best: best === stay },
-        { key: 'switch', label: `Switch to ${name(want)} in this chat`, money: money(sw, ' (re-reads the whole chat cold)'), best: best === sw },
-        { key: 'handoff', label: `Handoff to ${name(want)}`, money: money(ho, ` (${cap(live.compactModel)} summary plus a small new chat)`), best: best === ho, tier: want },
-      ]
+      const row = (key: string, label: string, r: CostRow, tier?: Tier) => ({
+        key,
+        label,
+        now: usd(r.first),
+        each: usd(r.after),
+        note: [payoff(r), r === best && 'recommended'].filter(Boolean).join(' · '),
+        // Only the recommended handoff gets its button.
+        tier: r === best ? tier : undefined,
+      })
+      costs = [row('stay', `Stay on ${name(c.model)}`, stay), row('switch', `Switch to ${name(want)}`, sw), row('handoff', `New chat on ${name(want)}`, ho, want)]
     }
+    // While the table offers its Hand off, that is the one Handoff in the panel.
+    const tableHandoff = costs.some(r => r.tier)
     const menuOpen = await read($, handoffMenu)
     const subs: SubCount = (await read($, subCount)) ?? {}
-    const moved = (['S', 'M', 'L'] as Tier[]).filter(t => subs[t]).map(t => `${subs[t]} to ${name(t)}`)
-    const parts = [...moved, subs.kept && `${subs.kept} kept`, subs.asked && `${subs.asked} as asked`].filter(Boolean)
-    const routedN = (['S', 'M', 'L', 'kept'] as const).reduce((n, k) => n + (subs[k] ?? 0), 0)
-    const subLine = !live.subagents
-      ? narrow ? '' : 'left on the model they ask for'
-      : parts.length
-        ? narrow ? `${routedN} routed` : `${routedN} routed this chat (${parts.join(', ')})`
-        : narrow ? '' : 'none yet this chat'
-    const hinted = await read($, layaHinted)
-    // Haiku's note only when the chat really runs Haiku; "picked" only after a decision (1, 7).
-    const effortNote = pin?.effort
-      ? 'pinned'
-      : l && effortWord
-        ? narrow ? effortWord : `picked ${effortWord}`
-        : realModel && tierOf(realModel) === 'S' && !narrow
-          ? 'Haiku takes no effort'
-          : ''
+    const subParts = [...(['S', 'M', 'L'] as Tier[]).filter(t => subs[t]).map(t => `${subs[t]} ${name(t)}`), subs.kept && `${subs.kept} kept`, subs.asked && `${subs.asked} as asked`].filter(Boolean)
+    const subN = (['S', 'M', 'L', 'kept', 'asked'] as const).reduce((n, k) => n + (subs[k] ?? 0), 0)
+    const why = judgeDown
+      ? 'Laya is not answering, so Haiku judged.'
+      : !l
+        ? 'No decision yet.'
+        : pinned
+          ? 'Pinned: arne keeps your pick until you choose Auto.'
+          : waiting
+            ? `${shortModel(waiting)} fits this task, but the cache is warm.`
+            : `${modelWord}${effortWord ? ` at ${effortWord} effort` : ''}: ${plainReason(l.reason)}.`
+    const whyNote = costs.length
+      ? `Switching in this chat re-reads all ${chatK} tokens. A new chat starts from a ${cap(live.compactModel)} summary.`
+      : waiting && c
+        ? `Switching in this chat re-reads all ${chatK} tokens, so arne stays on ${modelWord} until the cache cools.`
+        : [lastCost > 0 && `Last turn $${lastCost.toFixed(2)}`, subParts.length && `${subN} subagent${subN === 1 ? '' : 's'} routed: ${subParts.join(', ')}`].filter(Boolean).join(' · ')
     const alertTier = await handoffTier($)
     // A handoff to the chat's own tier only starts a new chat: say that (5).
     const alertLabel = c && alertTier === c.model ? `New chat on ${name(alertTier)}` : `Handoff to ${name(alertTier)}`
+    const handoffAlertButton = <Button key="handoff" plain label={alertLabel} onPress={(p: any) => handoff($, alertTier, p?.surface)} />
+    // The costs table's columns: a fixed width each, so the numbers line up.
+    const W = { label: narrow ? 18 : 20, now: 7, each: 12, end: 12 }
     return (
       <Box flexDirection="column" rowGap={gui ? 1 : 0}>
         {effortOn &&
           banner(
             'alert-effortless',
-            'effortless is on: it sets effort too. Disable it and restart.',
+            'effortless is on',
+            'It sets effort too, so arne routes the model only. Disable it, then restart.',
             isDisabling ? (
-              <Text key="disabling" color="subtle">disabling…</Text>
+              <Text key="disabling" dimColor>disabling…</Text>
             ) : (
               <Button key="disable-effortless" variant="primary" label="Disable effortless" onPress={() => disableEffortless($)} />
             ),
@@ -1414,26 +1415,28 @@ export const register: Register = (on, options) => {
         {heldText &&
           banner(
             'alert-held',
-            coldLine,
+            'Your message is waiting',
+            `The cache went cold, so sending now re-reads ${c ? `all ${chatK} tokens` : 'the whole chat'}.`,
             busy ?? [
-              <Button key="send-anyway" plain label="Send as is" onPress={() => sendAnyway($)} />,
-              <Button key="compact-send" variant="primary" label="Summarize, then send" onPress={() => compactAndSend($)} />,
+              <Button key="send-anyway" plain label={priced('Send now', price('continue'))} onPress={() => sendAnyway($)} />,
+              <Button key="compact-send" variant="primary" label={priced('Summarize, then send', price('compact'))} onPress={() => compactAndSend($)} />,
             ],
           )}
         {offer &&
           !heldText &&
           banner(
             'alert-cold',
-            coldLine,
+            'The cache went cold',
+            `Your next message re-reads all ${chatK} tokens, about ${price('continue')}.`,
             busy ?? [
-              <Button key="compact" variant="primary" label="Summarize" onPress={() => compactNow($, '')} />,
-              <Button key="handoff" plain label={alertLabel} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
               <Button key="continue" plain role="dismiss" label="Dismiss" onPress={async () => {
                   // One Dismiss covers the whole cold spell: the heavy alert would otherwise take its place.
                   const until = offer.c.warmUntil[offer.c.model] ?? 0
                   await update($, heavyDismissed, () => until)
                   await update($, coldDismissed, () => until)
                 }} />,
+              handoffAlertButton,
+              <Button key="compact" variant="primary" label={priced('Summarize first', price('compact'))} onPress={() => compactNow($, '')} />,
             ],
           )}
         {/* A big chat with a warm cache is never a reason for an alert (17p): only once it has gone cold. */}
@@ -1446,27 +1449,28 @@ export const register: Register = (on, options) => {
           !heavyGone &&
           banner(
             'alert-heavy',
-            `Chat is ${chatK} tokens. Compacting with ${cap(live.compactModel)} costs $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}; resending the whole chat costs $${dollars(costContinue(c.C, c.model, false)).toFixed(2)}.`,
+            `This chat is ${chatK} tokens`,
+            `Its cache went cold, so the next message re-reads all of it, about $${dollars(costContinue(c.C, c.model, false)).toFixed(2)}.`,
             busy ?? [
               // role="dismiss" only tells the surface how to draw it; the press itself hides the alert for this cold spell.
               <Button key="dismiss" plain role="dismiss" label="Dismiss" onPress={() => update($, heavyDismissed, () => c.warmUntil[c.model] ?? 0)} />,
-              <Button key="handoff" plain label={alertLabel} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
-              <Button key="compact-send" variant="primary" label="Summarize, then continue" onPress={() => compactThenContinue($)} />,
+              handoffAlertButton,
+              <Button key="compact-send" variant="primary" label={`Summarize, then continue · $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}`} onPress={() => compactThenContinue($)} />,
             ],
           )}
         <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
           {mode === 'paused' ? (
             <Box flexDirection="row" gap={1}>
               <Text color="claude">◆</Text>
-              <Text>arne</Text>
-              <Text color="subtle">paused · you picked {appModel ? shortModel(appModel) : 'a model'}</Text>
+              <Text weight="semibold">arne</Text>
+              <Text dimColor>paused · you picked {appModel ? shortModel(appModel) : 'a model'}</Text>
               <Button key="auto" plain label="Resume" onPress={() => toggleAuto($)} />
             </Box>
           ) : mode === 'off' ? (
             <Box flexDirection="row" gap={1}>
               <Text color="claude">◆</Text>
-              <Text>arne</Text>
-              <Text color="subtle">off</Text>
+              <Text weight="semibold">arne</Text>
+              <Text dimColor>off</Text>
               <Button key="auto" plain label="Turn on" onPress={() => toggleAuto($)} />
             </Box>
           ) : (
@@ -1474,30 +1478,30 @@ export const register: Register = (on, options) => {
               {gui ? (
                 <Box key="band-line" flexDirection="row" alignItems="center" gap={1}>
                   <Text color="claude">◆</Text>
-                  <Text bold>arne</Text>
-                  <Text color={decided ? undefined : 'subtle'}>{lineText}</Text>
+                  <Text weight="semibold">arne</Text>
+                  <Text>{lineText}</Text>
                   <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                    {reason !== '' && <Text color="subtle" wrap="truncate-end">{reason}</Text>}
+                    {reason !== '' && <Text dimColor wrap="truncate-end">{reason}</Text>}
                   </Box>
-                  {cacheWords !== '' && <Text color={left <= 0 ? 'inactive' : cool ? 'warning' : 'success'}>●</Text>}
-                  {cacheWords !== '' && <Text color="subtle">{rest.cache}</Text>}
+                  {c && <Text color={dotColor} dimColor={!dotColor}>●</Text>}
+                  {c && <Text dimColor tabular>{cacheText}</Text>}
                   <Button key="band" plain label={open ? '▴' : '▾'} onPress={toggle} />
                 </Box>
               ) : (
-              <Box flexDirection="row" justifyContent="space-between" gap={1}>
-                <Button key="band" plain onPress={toggle}>
-                  <Text color="claude">◆ </Text>
-                  <Text bold>arne</Text>
-                  <Text color={decided ? undefined : 'subtle'}>{`  ${lineText}`}</Text>
-                  {rest.reason !== '' && <Text color="inactive">{`  ${rest.reason}`}</Text>}
-                </Button>
-                {/* The cache and the chevron sit at the right end, as in the design. The dot carries warm, cooling or cold. */}
-                <Button key="band-cache" plain onPress={toggle}>
-                  {cacheWords !== '' && <Text color={left <= 0 ? 'inactive' : cool ? 'warning' : 'success'}>● </Text>}
-                  {cacheWords !== '' && <Text color="subtle">{rest.cache}</Text>}
-                  <Text color="subtle">{open ? ' ▴' : ' ▾'}</Text>
-                </Button>
-              </Box>
+                <Box key="band-line" flexDirection="row" justifyContent="space-between" gap={1}>
+                  <Button key="band" plain onPress={toggle}>
+                    <Text color="claude">◆ </Text>
+                    <Text weight="semibold">arne</Text>
+                    <Text>{`  ${lineText}`}</Text>
+                    {rest.reason !== '' && <Text dimColor>{`  ${rest.reason}`}</Text>}
+                  </Button>
+                  {/* The cache and the chevron sit at the right end, as in the design. */}
+                  <Button key="band-cache" plain onPress={toggle}>
+                    {c && <Text color={dotColor} dimColor={!dotColor}>● </Text>}
+                    {c && <Text dimColor tabular>{cacheText}</Text>}
+                    <Text dimColor>{open ? ' ▴' : ' ▾'}</Text>
+                  </Button>
+                </Box>
               )}
               {/* Plugins cannot move the app's model menu, so a mismatch shows on the band itself, not only in the panel. */}
               {picker && running && tierOf(picker) !== tierOf(running) && (
@@ -1505,7 +1509,7 @@ export const register: Register = (on, options) => {
               )}
               {open && view === 'settings' && (
                 <Box flexDirection="column" marginTop={1}>
-                  {settingsView($, { Box, Button, Text }, narrow, gui)}
+                  {settingsView($, { Box, Button, Text }, gui)}
                 </Box>
               )}
               {open && view === 'stats' && (
@@ -1515,11 +1519,53 @@ export const register: Register = (on, options) => {
               )}
               {open && view === 'main' && (
                 <Box flexDirection="column" gap={1} marginTop={1}>
-                  {/* Each row: a fixed-width label, the segments as one group that never splits, then the note. */}
-                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
-                    <Box flexDirection="row" alignItems="center" flexShrink={0}>
-                      <Box width={10} flexShrink={0}>
-                        <Text color="subtle">Model</Text>
+                  {/* Why: the sentence with the two ratings on its right, one footnote under it. */}
+                  <Box flexDirection="column">
+                    <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2}>
+                      <Text>{why}</Text>
+                      {l && !pinned && thankedKey !== l.key && (
+                        <Box flexDirection="row" flexShrink={0} gap={1}>
+                          <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
+                          <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
+                        </Box>
+                      )}
+                      {l && !pinned && thankedKey === l.key && <Text size="footnote" dimColor>Saved for Laya's training.</Text>}
+                    </Box>
+                    {whyNote !== '' && <Text size="footnote" dimColor>{whyNote}</Text>}
+                  </Box>
+                  {costs.length > 0 && (
+                    <Box key="costs" flexDirection="column">
+                      {[{ key: 'head', label: '', now: 'Now', each: 'Each turn', note: '', tier: undefined as Tier | undefined }, ...costs].map(r => (
+                        <Box key={`cost-${r.key}`} flexDirection="column">
+                          <Box key={`cost-${r.key}-row`} flexDirection="row" alignItems="center" columnGap={2}>
+                            <Box width={W.label} flexShrink={0}>
+                              <Text dimColor={r.key === 'head'}>{r.label}</Text>
+                            </Box>
+                            <Box width={W.now} flexShrink={0}>
+                              <Text tabular dimColor={r.key === 'head'}>{r.now}</Text>
+                            </Box>
+                            <Box width={W.each} flexShrink={0}>
+                              <Text tabular dimColor>{r.each}</Text>
+                            </Box>
+                            {!narrow && (
+                              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                                {r.note !== '' && <Text size="footnote" dimColor>{r.note}</Text>}
+                              </Box>
+                            )}
+                            <Box width={W.end} flexShrink={0} justifyContent="flex-end">
+                              {r.tier && (busy ?? <Button key="handoff-row" variant="secondary" label="Hand off" onPress={(p: any) => handoff($, r.tier!, p?.surface)} />)}
+                            </Box>
+                          </Box>
+                          {/* Narrow, the note goes under its row. */}
+                          {narrow && r.note !== '' && <Text size="footnote" dimColor>{r.note}</Text>}
+                        </Box>
+                      ))}
+                    </Box>
+                  )}
+                  <Box flexDirection="column">
+                    <Box flexDirection="row" flexWrap="wrap" alignItems="center">
+                      <Box width={8} flexShrink={0}>
+                        <Text size="footnote" dimColor>Model</Text>
                       </Box>
                       {segment(
                         'model',
@@ -1528,13 +1574,9 @@ export const register: Register = (on, options) => {
                         v => void setPinPart($, { tier: v === 'auto' ? undefined : TIER_OF[v] }),
                       )}
                     </Box>
-                    {/* No decision, no "picked"; narrow, the bare word, so the row stays one line (1, 7). */}
-                    {(pin?.tier || l) && <Text color="subtle">{pin?.tier ? 'pinned' : narrow ? modelWord : `picked ${modelWord}`}</Text>}
-                  </Box>
-                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
-                    <Box flexDirection="row" alignItems="center" flexShrink={0}>
-                      <Box width={10} flexShrink={0}>
-                        <Text color="subtle">Effort</Text>
+                    <Box flexDirection="row" flexWrap="wrap" alignItems="center">
+                      <Box width={8} flexShrink={0}>
+                        <Text size="footnote" dimColor>Effort</Text>
                       </Box>
                       {segment(
                         'effort',
@@ -1542,70 +1584,29 @@ export const register: Register = (on, options) => {
                           { value: 'auto', label: 'Auto' },
                           ...(['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({
                             value: v,
-                            label: narrow ? EFFORT_LABEL_SHORT[v] : EFFORT_LABEL[v],
+                            label: (narrow ? EFFORT_LABEL_SHORT : EFFORT_LABEL)[v] ?? v,
                           })),
                         ],
                         pin?.effort ?? 'auto',
                         v => void setPinPart($, { effort: v === 'auto' ? undefined : (v as Pin['effort']) }),
                       )}
                     </Box>
-                    {effortNote !== '' && <Text color="subtle">{effortNote}</Text>}
                   </Box>
-                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
-                    <Text>{why}</Text>
-                    {/* The two ratings are one group that never splits (4). */}
-                    {l && !pinned && thankedKey !== l.key && (
-                      <Box flexDirection="row" flexShrink={0} gap={1}>
-                        <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
-                        <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
-                      </Box>
-                    )}
-                    {l && !pinned && thankedKey === l.key && <Text color="subtle">Saved for Laya's training.</Text>}
-                  </Box>
-                  {/* What a rating is for, under the two buttons (17v): once a chat, not on every open (4). */}
-                  {l && !pinned && !hinted && thankedKey !== l.key && <Text color="subtle">Ratings train Laya, your local judge. Saved only on this machine.</Text>}
-                  {costs.length > 0 && (
-                    <Box flexDirection="column">
-                      {costs.map(r => (
-                        // One line: the label and its money on the left (the money wraps under the label when
-                        // there is no room), "· best" and the handoff button on the right, never wrapped.
-                        <Box key={`cost-${r.key}`} flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2}>
-                          <Box key={`cost-${r.key}-text`} flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={1} minWidth={0}>
-                            <Text>{r.label}</Text>
-                            <Text color="subtle">{r.money}</Text>
-                          </Box>
-                          <Box key={`cost-${r.key}-end`} flexDirection="row" alignItems="center" columnGap={2} flexShrink={0}>
-                            {r.best && <Text color="subtle">· best</Text>}
-                            {r.tier && (busy ?? <Button key="handoff-row" plain label="Handoff" onPress={(p: any) => handoff($, r.tier!, p?.surface)} />)}
-                          </Box>
-                        </Box>
-                      ))}
-                    </Box>
-                  )}
-                  {/* What arne did with this chat's subagents, and the switch for it (17x). */}
-                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
-                    <Box flexDirection="row" alignItems="center" flexShrink={0}>
-                      <Box width={10} flexShrink={0}>
-                        <Text color="subtle">Subagents</Text>
-                      </Box>
-                      {segment('subs', [{ value: 'on', label: 'On' }, { value: 'off', label: 'Off' }], live.subagents ? 'on' : 'off', v => void setOption($, 'subagents', v === 'on'))}
-                    </Box>
-                    {subLine !== '' && <Text color="subtle">{subLine}</Text>}
-                  </Box>
-                  {doneTo && <Text color="subtle">{`Handed off to ${name(doneTo as Tier)}. Old chat saved in history; archive it from the sidebar when you are done.`}</Text>}
-                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
+                  {doneTo && <Text size="footnote" dimColor>{`Handed off to ${name(doneTo as Tier)}. Old chat saved in history; archive it from the sidebar when you are done.`}</Text>}
+                  {/* Footer: the views and Handoff… on the left, Turn off alone on the right. */}
+                  <Box key="footer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Box flexDirection="row" flexWrap="wrap" gap={2}>
-                      <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
-                      <Button key="gear" plain label="Settings" onPress={() => update($, panelView, () => 'settings')} />
-                      {/* While the costs table shows, its handoff row is the one Handoff (3). */}
-                      {costs.length === 0 && (busy ?? <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />)}
+                      <Button key="gear" plain label="Settings" onPress={() => openView($, 'settings')} />
+                      <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />
+                      {!tableHandoff && (busy ?? <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />)}
                       {menuOpen &&
                         !busy &&
-                        costs.length === 0 &&
+                        !tableHandoff &&
                         (['S', 'M', 'L'] as Tier[]).map(t => (
                           <Button key={`handoff-${TIER_NAME_OF[t]}`} plain label={`to ${name(t)}`} onPress={(p: any) => handoff($, t, p?.surface)} />
                         ))}
                     </Box>
+                    <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
                   </Box>
                 </Box>
               )}
@@ -1620,7 +1621,7 @@ export const register: Register = (on, options) => {
   for (const id of [SETTINGS, STATS]) {
     on('ui.render', { component: 'Pane', requestId: id }, async ($, e) => {
       const { Text } = $.ui.resolve(e)
-      return <Text color="subtle">arne's settings and stats are in the band above the prompt: open it, then Settings.</Text>
+      return <Text dimColor>arne's settings and stats are in the band above the prompt: open it, then Settings.</Text>
     })
   }
 

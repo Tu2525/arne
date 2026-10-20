@@ -194,14 +194,14 @@ test('a pin of xhigh passes the default ceiling and is kept (17h)', async ($: an
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned opus · xhigh')
 })
 
-test('the Judge row set to Laya sets backend laya, and says Laya runs here (17h)', async ($: any, on: any) => {
+test('the Judge row set to Laya sets backend laya, and Settings says what Laya is (17h)', async ($: any, on: any) => {
   engine(on)
   // The Laya segment's press calls this same set; the harness does not reach the pane's buttons.
   await $.config.set({ key: 'arne.backend', value: 'laya' })
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend laya')
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 30 } })
   await $.command.run({ command: 'arne', args: 'settings' })
-  expect(await pane.find({ type: 'Text', text: /Laya runs on this machine through laya-serve/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^Laya is a judge that runs on this machine/ })).toBeDefined()
 })
 
 test('a pin from the band or /arne pin moves /model at once, before any prompt (17f)', async ($: any, on: any) => {
@@ -227,7 +227,7 @@ test('the band never prefixes "arne:", says off in words, and the settings pane 
   await $.command.run({ command: 'arne', args: 'on' })
   await $.command.run({ command: 'arne', args: 'settings' })
   const pane = band
-  for (const group of ['Routing', 'Range']) expect(await pane.find({ type: 'Text', text: group })).toBeDefined()
+  for (const group of ['Routing', 'Limits']) expect(await pane.find({ type: 'Text', text: group })).toBeDefined()
 })
 
 test('a step with no usage keeps the cache size, and the footer gets no status while on (17g)', async ($: any, on: any) => {
@@ -241,7 +241,7 @@ test('a step with no usage keeps the cache size, and the footer gets no status w
     // drain
   }
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
-  expect(await band.find({ type: 'Text', text: /cache warm \d+m · 50k/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^\d+m$/ })).toBeDefined()
   // The footer already shows the model and effort; arne adds nothing there while it runs.
   expect(s.statuses.filter(x => x.includes('·'))).toEqual([])
 })
@@ -259,7 +259,7 @@ test('the band takes its width from bodyColumns: one resting row, short effort l
 
   // The panel stays open (its state is arne's), so the narrow mount shows it in the short forms.
   const narrow = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 50 }, viewport: { columns: 50, rows: 24 } })
-  expect(await narrow.find({ type: 'Button', text: 'XHi' })).toBeDefined()
+  expect(await narrow.find({ type: 'Button', text: 'XHigh' })).toBeDefined()
   expect(await narrow.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
   // The resting line keeps the model at 50 columns: the reason and cache shorten, the head stays.
   expect(await narrow.find({ type: 'Text', text: /Sonnet/ })).toBeDefined()
@@ -277,8 +277,9 @@ test('a big chat with a warm cache shows no alert; once cold, the alert gives bo
   await warm.unmount()
   await clock.advance(2 * 60 * 60_000)
   const cold = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 24 } })
-  expect(await cold.find({ type: 'Text', text: /^The cache went cold, so your next message re-reads all 263k tokens: \$[\d.]+\. A Haiku summary first costs \$[\d.]+\.$/ })).toBeDefined()
-  expect(await cold.find({ type: 'Button', text: 'Summarize' })).toBeDefined()
+  expect(await cold.find({ type: 'Text', text: 'The cache went cold' })).toBeDefined()
+  expect(await cold.find({ type: 'Text', text: /^Your next message re-reads all 263k tokens, about \$[\d.]+\.$/ })).toBeDefined()
+  expect(await cold.find({ type: 'Button', text: /^Summarize first · \$[\d.]+$/ })).toBeDefined()
 })
 
 test('on the desktop the resting line is styled Text and the chevron alone is the button (17l)', async ($: any, on: any) => {
@@ -289,7 +290,7 @@ test('on the desktop the resting line is styled Text and the chevron alone is th
   }
   const band = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
   expect(await band.find({ type: 'Text', text: 'arne' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: /cache warm \d+m · 50k/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^\d+m$/ })).toBeDefined()
   expect(await band.find({ type: 'Button', text: /arne/ })).toBeUndefined()
   await band.press({ key: 'band' })
   for (let i = 0; i < 2; i++) await clock.settle()
@@ -300,7 +301,7 @@ test('a narrow settings pane takes its width from bodyColumns and shows the shor
   engine(on, 'claude-sonnet-5-5')
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 40 }, viewport: { columns: 160, rows: 30 } })
   await $.command.run({ command: 'arne', args: 'settings' })
-  expect(await pane.find({ type: 'Button', text: 'XHi' })).toBeDefined()
+  expect(await pane.find({ type: 'Button', text: 'XHigh' })).toBeDefined()
   expect(await pane.find({ type: 'Button', text: 'Extra high' })).toBeUndefined()
 })
 
@@ -334,9 +335,11 @@ test('a sticky cheaper pick shows stay, switch and handoff with their costs; one
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 120 }, viewport: { columns: 120, rows: 40 } })
   await band.press({ key: 'band' })
   expect(await band.find({ type: 'Text', text: 'Stay on Opus' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: 'Switch to Sonnet in this chat' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: /pays off after \d+ turn/ })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: 'best' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'Switch to Sonnet' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'New chat on Sonnet' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /pays off in \d+ turn/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'Sonnet fits this task, but the cache is warm.' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^Switching in this chat re-reads all 150k tokens\. A new chat starts from a Haiku summary\.$/ })).toBeDefined()
   await Promise.all([band.press({ key: 'handoff-row' }).catch(() => undefined), band.press({ key: 'handoff-row' }).catch(() => undefined)])
   for (let i = 0; i < 3; i++) await clock.settle()
   expect(s.ran.filter(r => r.startsWith('/clear')).length).toBe(1)
@@ -356,7 +359,7 @@ test('/arne handoff haiku runs the summary, /clear, /model haiku and sends the s
   expect((await $.command.run({ command: 'arne', args: 'handoff gpt' })).text).toContain('Usage')
 })
 
-test('an Auto pick says so on the band: auto, the model, routed; a pin does not', async ($: any, on: any) => {
+test('the resting line is the model and effort, then the reason: no "auto ·", no "(routed)"; a pin says pinned', async ($: any, on: any) => {
   const { s, clock } = engine(on)
   on('turn.start', (_$: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
   await $.prompt.submit(typed('what is a mutex'))
@@ -366,12 +369,14 @@ test('an Auto pick says so on the band: auto, the model, routed; a pin does not'
     // drain
   }
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
-  expect(await band.find({ type: 'Text', text: /auto · Haiku.*\(routed\)/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /Haiku/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /auto ·|\(routed\)/ }).catch(() => undefined)).toBeUndefined()
   await band.unmount()
   await $.command.run({ command: 'arne', args: 'pin opus high' })
   for (let i = 0; i < 3; i++) await clock.settle()
   const pinned = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
   expect(await pinned.find({ type: 'Text', text: /\(routed\)/ }).catch(() => undefined)).toBeUndefined()
+  expect(await pinned.find({ type: 'Text', text: /^ *pinned$/ })).toBeDefined()
 })
 
 test('a model pin from the app menu pins both parts: no judge, the effort the app sends, subagents left alone (17p)', async ($: any, on: any) => {
@@ -488,10 +493,10 @@ test('the band countdown ticks without a session start, as after a reload (17u)'
   }
   const band = await $.ui.mount(band80)
   await $.command.run({ command: 'arne', args: 'backend heuristic' })
-  const before = (await band.find({ type: 'Text', text: /cache warm \d+m/ })).text
+  const before = (await band.find({ type: 'Text', text: /^\d+m$/ })).text
   await clock.advance(2 * 60_000) // inside the 5m TTL: still warm, two minutes fewer
   for (let i = 0; i < 3; i++) await clock.settle()
-  const after = (await band.find({ type: 'Text', text: /cache warm \d+m/ })).text
+  const after = (await band.find({ type: 'Text', text: /^\d+m$/ })).text
   expect(after).not.toBe(before)
 })
 
@@ -509,9 +514,9 @@ test('heavy "Dismiss" hides the banner (17u)', async ($: any, on: any) => {
   await $.config.set({ key: 'arne.coldTokens', value: 200_000 }) // no cold offer, so the heavy alert shows
   await coldHeavy($, s, clock)
   const band = await $.ui.mount(band80)
-  expect(await band.find({ type: 'Text', text: /^Chat is 160k tokens/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'This chat is 160k tokens' })).toBeDefined()
   await band.press({ key: 'dismiss' })
-  expect(await band.find({ type: 'Text', text: /^Chat is/ }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /^This chat is/ }).catch(() => undefined)).toBeUndefined()
 })
 
 test('a double press on "Summarize" runs one compact, and the banner says summarizing (17u)', async ($: any, on: any) => {
@@ -566,7 +571,7 @@ test('one cold Dismiss covers the cold spell: no heavy alert after it; the next 
   await band.press({ key: 'continue' }) // the cold alert's Dismiss
   for (let i = 0; i < 3; i++) await clock.settle()
   expect(await band.find({ type: 'Text', text: /^The cache went cold/ }).catch(() => undefined)).toBeUndefined()
-  expect(await band.find({ type: 'Text', text: /^Chat is/ }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /^This chat is/ }).catch(() => undefined)).toBeUndefined()
   await band.unmount()
   await coldHeavy($, s, clock) // a new response, then cold again: a new warmUntil
   const again = await $.ui.mount(band80)
@@ -624,7 +629,7 @@ test('a subagent gets its model at spawn: never dearer than the chat, effort at 
   expect(spawned.slice(2)).toEqual(['opus', undefined])
 })
 
-test('a long brief is no Opus subagent; a moved one is said on its call; Subagents off and an asked model pass through; the panel counts them beside an On/Off segment (17x, band fix 6)', async ($: any, on: any) => {
+test('a long brief is no Opus subagent; a moved one is said on its call; Subagents off and an asked model pass through; the panel footnote counts them (17x, band fix 6)', async ($: any, on: any) => {
   const { clock } = engine(on, 'claude-sonnet-5-5')
   on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
   const notices: { tool_use_id: string; text?: string }[] = []
@@ -645,12 +650,12 @@ test('a long brief is no Opus subagent; a moved one is said on its call; Subagen
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
   await $.ui.press({ plugin: 'arne', key: 'band' })
   for (let i = 0; i < 3; i++) await clock.settle()
-  expect(await band.find({ type: 'Text', text: '2 routed this chat (1 to Haiku, 1 kept, 1 as asked)' })).toBeDefined()
-
-  expect(await band.find({ type: 'Text', text: 'Subagents' })).toBeDefined()
-  await $.ui.press({ plugin: 'arne', key: 'subs-off' })
+  expect(await band.find({ type: 'Text', text: '3 subagents routed: 1 Haiku, 1 kept, 1 as asked' })).toBeDefined()
+  // The switch lives in Settings now; the panel keeps only the count.
+  expect(await band.find({ type: 'Text', text: 'Subagents' }).catch(() => undefined)).toBeUndefined()
+  await $.ui.press({ plugin: 'arne', key: 'gear' })
+  await $.ui.press({ plugin: 'arne', key: 'subagents-false' })
   for (let i = 0; i < 3; i++) await clock.settle()
-  expect(await band.find({ type: 'Text', text: 'left on the model they ask for' })).toBeDefined()
   const n = got.length
   await spawn('t4')
   expect(got[n]).toEqual({ tool_use_id: 't4', prompt: 'Design the plan: '.padEnd(5000, 'x'), description: 'a task', subagentType: 'general-purpose', parentModel: 'claude-sonnet-5-5', background: false, fork: false })
@@ -675,33 +680,23 @@ test('two arne plugins enabled: a write finds the row arne owns; two rows of its
   await $.command.run({ command: 'arne', args: 'subagents on' })
 })
 
-test('a new chat: the band names the running model, the panel says no "picked" and no Haiku note off Haiku; on Haiku it does (band fixes 1, 2)', async ($: any, on: any) => {
-  engine(on, 'claude-sonnet-5-5')
-  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
-  expect(await band.find({ type: 'Text', text: /auto · Sonnet/ })).toBeDefined()
-  await band.press({ key: 'band' })
-  expect(await band.find({ type: 'Text', text: /picked/ }).catch(() => undefined)).toBeUndefined()
-  expect(await band.find({ type: 'Text', text: 'Haiku takes no effort' }).catch(() => undefined)).toBeUndefined()
-})
-
-test('a new Haiku chat says Haiku takes no effort (band fix 1)', async ($: any, on: any) => {
+test('a new chat: the band names the running model, the panel has no notes beside the pickers (band fixes 1, 2)', async ($: any, on: any) => {
   engine(on, 'claude-haiku-5-5')
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
+  expect(await band.find({ type: 'Text', text: /^ *Haiku$/ })).toBeDefined()
   await band.press({ key: 'band' })
-  expect(await band.find({ type: 'Text', text: 'Haiku takes no effort' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /picked|takes no effort/ }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: 'No decision yet.' })).toBeDefined()
 })
 
-test('the costs table holds the one Handoff, best on its row; the Laya line shows once a chat; narrow notes are bare words (band fixes 3, 4, 7)', async ($: any, on: any) => {
+test('the costs table holds the one Hand off, on the recommended row; no Laya line in the panel; narrow has no notes (band fixes 3, 4, 7)', async ($: any, on: any) => {
   await stickyOpus($, on)
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 120 }, viewport: { columns: 120, rows: 40 } })
   await band.press({ key: 'band' })
-  expect(await band.find({ type: 'Button', text: 'Handoff' })).toBeDefined()
+  expect(await band.findAll({ type: 'Button', text: 'Hand off' })).toHaveLength(1)
   expect(await band.find({ type: 'Button', text: 'Handoff…' }).catch(() => undefined)).toBeUndefined()
-  expect(await band.find({ type: 'Text', text: '· best' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: /^Ratings train Laya/ })).toBeDefined()
-  await band.press({ key: 'band' })
-  await band.press({ key: 'band' })
-  expect(await band.find({ type: 'Text', text: /^Ratings train Laya/ }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /pays off in \d+ turns? · recommended/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /Ratings train Laya/ }).catch(() => undefined)).toBeUndefined()
   expect(await band.find({ type: 'Button', text: 'Good call' })).toBeDefined()
 
   const slim = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 50 }, viewport: { columns: 50, rows: 40 } })
@@ -740,7 +735,7 @@ test('one press on each settings choice in the panel writes that setting', async
   await $.command.run({ command: 'arne', args: 'subagents on' })
 })
 
-test('Settings, then Stats, then Back twice is the main panel; closing the panel resets the view; /arne settings opens it', async ($: any, on: any) => {
+test('Settings and Stats each open from the panel footer, and ‹ Back returns to the main panel; closing resets the view; /arne settings opens it', async ($: any, on: any) => {
   engine(on, 'claude-sonnet-5-5')
   on('env.get', () => ({ value: '/home/t' }))
   on('fs.read', () => ({ value: '' })) // an empty decisions.jsonl: Stats has nothing yet
@@ -749,12 +744,14 @@ test('Settings, then Stats, then Back twice is the main panel; closing the panel
   await band.press({ key: 'band' })
   await band.press({ key: 'gear' })
   expect([await at('Routing'), await at('Model')]).toEqual([true, false])
-  await band.press({ key: 'open-stats' })
-  expect([await at('Stats'), await at('Routing')]).toEqual([true, false])
-  await band.press({ key: 'back' })
-  expect(await at('Routing')).toBe(true)
+  // Settings no longer links to Stats.
+  expect(await band.find({ key: 'open-stats' }).catch(() => undefined)).toBeUndefined()
   await band.press({ key: 'back' })
   expect([await at('Model'), await at('Routing')]).toEqual([true, false])
+  await band.press({ key: 'open-stats' })
+  expect([await at('Stats'), await at('No turns in the last 7 days yet.'), await at('Model')]).toEqual([true, true, false])
+  await band.press({ key: 'back' })
+  expect([await at('Model'), await at('Stats')]).toEqual([true, false])
 
   await band.press({ key: 'gear' })
   await band.press({ key: 'band' }) // closes
@@ -767,33 +764,104 @@ test('Settings, then Stats, then Back twice is the main panel; closing the panel
   expect(await at('Routing')).toBe(true)
 })
 
-test('a cost row is one line: label and money wrap together on the left, best and the button stay on the right (costs fix 1)', async ($: any, on: any) => {
+test('the costs table has fixed-width columns, a dim header, and the one Hand off at the recommended row\'s end (17w redesign)', async ($: any, on: any) => {
   await stickyOpus($, on)
   const band = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 40 } })
   await band.press({ key: 'band' })
-  for (const k of ['stay', 'switch', 'handoff']) {
-    const row = await band.find({ key: `cost-${k}` })
-    expect(row.props.flexWrap).toBeUndefined()
-    expect(row.children.map((c: any) => c.props?.key)).toEqual([`cost-${k}-text`, `cost-${k}-end`])
-    const left = await band.find({ key: `cost-${k}-text` })
-    expect(left.props.flexWrap).toBe('wrap')
-    expect(left.children.map((c: any) => c.type)).toEqual(['Text', 'Text'])
-    expect((await band.find({ key: `cost-${k}-end` })).props.flexShrink).toBe(0)
-  }
-  // The handoff row's end holds its button; "· best" sits beside it on whichever row is cheapest.
-  const end = await band.find({ key: 'cost-handoff-end' })
-  expect(end.children.at(-1).props.label).toBe('Handoff')
-  expect(await band.find({ type: 'Text', text: '· best' })).toBeDefined()
+  const widths = async (k: string) => (await band.find({ key: `cost-${k}-row` })).children.map((c: any) => c.props.width)
+  const first = await widths('head')
+  for (const k of ['stay', 'switch', 'handoff']) expect(await widths(k)).toEqual(first)
+  expect(first.filter((w: unknown) => typeof w === 'number').length).toBe(4)
+  const head = await band.find({ key: 'cost-head-row' })
+  expect(head.children[1].children[0]).toMatchObject({ type: 'Text', props: { dimColor: true } })
+  expect(await band.find({ type: 'Text', text: 'Stay on Opus' })).toBeDefined()
+  const end = (await band.find({ key: 'cost-handoff-row' })).children.at(-1)
+  expect(end.children[0].props).toMatchObject({ label: 'Hand off', variant: 'secondary' })
+  // The footer gives way to the table's Hand off.
+  expect(await band.find({ key: 'handoff-menu' }).catch(() => undefined)).toBeUndefined()
 })
 
-test('Subagents reads On/Off in Settings as in the panel; no Esc hint, since no key closes the band (fixes 2, 3)', async ($: any, on: any) => {
+test('Subagents reads On/Off in Settings, not in the panel; no Esc hint, since no key closes the band (fixes 2, 3)', async ($: any, on: any) => {
   engine(on, 'claude-sonnet-5-5')
   const band = await $.ui.mount(band100)
   await band.press({ key: 'band' })
   expect(await band.find({ type: 'Text', text: /Esc/ }).catch(() => undefined)).toBeUndefined()
-  expect((await band.find({ key: 'subs-on' })).props.label).toBe('On')
+  expect(await band.find({ key: 'subs-on' }).catch(() => undefined)).toBeUndefined()
   await band.press({ key: 'gear' })
   expect((await band.find({ key: 'subagents-true' })).props.label).toBe('On')
   expect((await band.find({ key: 'subagents-false' })).props.label).toBe('Off')
-  expect(await band.find({ type: 'Button', text: 'Route' }).catch(() => undefined)).toBeUndefined()
+})
+
+// --- The redesign: dim secondary text, a quiet resting line, alerts in macOS order ---
+
+test('no Text in the band, panel, alerts, Settings or Stats uses color subtle or inactive', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', () => ({ value: '' }))
+  await coldHeavy($, s, clock) // a cold alert over the band
+  const band = await $.ui.mount(band100)
+  const check = async () => {
+    for (const t of await band.findAll({ type: 'Text' })) expect(['subtle', 'inactive']).not.toContain(t.props.color)
+  }
+  await check()
+  await band.press({ key: 'band' })
+  await check()
+  await band.press({ key: 'gear' })
+  await check()
+  await band.press({ key: 'back' })
+  await band.press({ key: 'open-stats' })
+  await check()
+})
+
+test('an alert puts dismiss first and its primary last, with the price it spends', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  await coldHeavy($, s, clock)
+  const band = await $.ui.mount(band100)
+  const cold = (await band.find({ key: 'alert-cold-actions' })).children
+  expect(cold.map((b: any) => b.props.key)).toEqual(['continue', 'handoff', 'compact'])
+  expect(cold.at(-1).props.variant).toBe('primary')
+  expect(cold.at(-1).props.label).toMatch(/· \$\d+\.\d\d$/)
+
+  await $.prompt.submit(typed('what is a mutex')) // held on the cold chat
+  const heldActions = (await band.find({ key: 'alert-held-actions' })).children
+  expect(heldActions.map((b: any) => b.props.label)).toEqual([expect.stringMatching(/^Send now · \$/), expect.stringMatching(/^Summarize, then send · \$/)])
+  expect(heldActions.at(-1).props.variant).toBe('primary')
+  expect(await band.find({ type: 'Text', text: 'Your message is waiting' })).toBeDefined()
+})
+
+test('Settings starts with ‹ Back, then its title; the Judge row offers Jev; Limits uses the short effort names', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  const band = await $.ui.mount(band100)
+  await $.command.run({ command: 'arne', args: 'settings' })
+  const view = await band.find({ key: 'settings-view' })
+  expect(view.children[0].props.key).toBe('view-head')
+  const head = await band.find({ key: 'view-head' })
+  expect(head.children[0].props.label).toBe('‹ Back')
+  expect(head.children[1]).toMatchObject({ type: 'Text', props: { weight: 'semibold' } })
+  expect(await band.find({ type: 'Text', text: 'Settings' })).toBeDefined()
+  expect((await band.find({ key: 'backend-jev' })).props.label).toBe('Jev')
+  expect(await band.find({ type: 'Text', text: 'Limits' })).toBeDefined()
+  expect(await band.find({ key: 'effortCeiling-medium' })).toMatchObject({ props: { label: 'Med' } })
+  expect(await band.find({ type: 'Text', text: 'Also in /config.' })).toBeDefined()
+})
+
+test('the panel: the why sentence, then one footnote with the last turn\'s cost; Settings, Stats and Handoff… left, Turn off right', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  on('turn.start', (_$: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('model.complete', () => ({ value: { text: '{"tier":"M","effort":"medium","reason":"a multi-file edit"}', isAnswered: true } }))
+  await $.prompt.submit(typed('refactor the helpers in this module please'))
+  for (let i = 0; i < 3; i++) await clock.settle()
+  await $.turn.start({ text: 'refactor the helpers in this module please', turnId: 'p1' })
+  s.usage = { input_tokens: 10, output_tokens: 2000, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 0 }
+  for await (const _ of $.turn.step({ turnId: 'p1', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  const band = await $.ui.mount(band100)
+  expect(await band.find({ type: 'Text', text: /^ *a multi-file edit$/ })).toBeDefined()
+  await band.press({ key: 'band' })
+  expect(await band.find({ type: 'Text', text: 'Sonnet at medium effort: a multi-file edit.' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^Last turn \$\d+\.\d\d$/ })).toBeDefined()
+  const footer = (await band.find({ key: 'footer' })).children
+  expect(footer[0].children.map((b: any) => b.props.label)).toEqual(['Settings', 'Stats', 'Handoff…'])
+  expect(footer[1].props.label).toBe('Turn off')
 })

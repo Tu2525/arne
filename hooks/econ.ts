@@ -251,4 +251,4 @@ export function fitRest(width: number, head: string, reason: string, caches: str
 
 /** Effort names for the band's panel: the short forms when the panel is narrow. */
 export const EFFORT_LABEL: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' }
-export const EFFORT_LABEL_SHORT: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHi', max: 'Max' }
+export const EFFORT_LABEL_SHORT: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHigh', max: 'Max' }
