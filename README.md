@@ -6,6 +6,8 @@ arne replaces effortless by HeyCubit (MIT). Its cost ratios and the bench below 
 
 [![arne demo: 21 seconds](demo/arne.jpg)](demo/arne.mp4)
 
+[![arne bench: 53% cheaper per task](demo/poster.png)](demo/poster.png)
+
 ## Install
 
 ```
