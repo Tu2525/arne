@@ -718,7 +718,7 @@ function viewHead($: any, { Box, Button, Text }: any, title: string) {
 // The panel's Settings view: a label and a segmented control per row. A press shows the new value at
 // once, then writes it through $.config.set (setOption), so the panel and /config never disagree.
 function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: number, needsKey = false) {
-  const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
+  const choice = (label: unknown, key: keyof Live, options: { value: unknown; label: string }[]) => {
     const set = (value: unknown) => setOption($, key, value)
     return (
       <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
@@ -761,7 +761,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
             { value: 'laya', label: 'Laya' },
             { value: 'jev', label: 'Jev' },
           ]),
-          choice('Subagents', 'subagents', [
+          choice(<Text>Subagents <Text size="footnote" dimColor>experimental</Text></Text>, 'subagents', [
             { value: 'auto', label: 'Auto' },
             { value: 'haiku', label: 'Haiku' },
             { value: 'sonnet', label: 'Sonnet' },
