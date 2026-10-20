@@ -136,6 +136,7 @@ async function compactNow($: any, note: string): Promise<boolean> {
 // place, pinned to `tier`, whose first message is the summary. The old chat stays in history; no plugin
 // call archives a desktop chat, so that stays the person's click. One at a time (the compacting atom).
 const HANDOFF_FILE = 'arne-handoff.md'
+const ARCHIVE_DIR = 'arne-archive'
 const SUMMARY_SYSTEM = 'Summarize this coding conversation for its next turn: goal, decisions and why, files changed (paths), exact errors, open questions, next step. Plain text, under 1500 words.'
 
 // Set before the first await, so two presses in the same tick still run one handoff; the atom draws "summarizing…".
@@ -164,6 +165,10 @@ Summary of an earlier chat (written by ${shortModel(live.compactModel)} for arne
 ${r.text}
 `
     await $.fs.write(HANDOFF_FILE, text).catch(() => undefined)
+    // The whole old chat, kept as a file before /clear: the sidebar history alone is not a copy.
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const transcript = said.map((m: any) => `## ${m.role ?? 'message'}\n\n${m.text}`).join('\n\n')
+    await $.fs.write(`${ARCHIVE_DIR}/handoff-${stamp}.md`, `# Chat before handoff\n\n${transcript}\n`).catch(() => undefined)
     await $.ui.copy({ text, surface }).catch(() => undefined)
     step = '/clear'
     await $.command.run({ command: 'clear', args: '' })
