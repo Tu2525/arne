@@ -26,7 +26,7 @@ const PRIORS: Record<string, Verdict> = {
 }
 
 const CONTINUE = /^\W*(y|yes|ok|okay|continue|go on|go ahead|proceed|sure|ok do it|do it)\W*$/i
-const HARD = /\b(architect\w*|design|plan|why does|race|security)\b/i
+const HARD = /\b(architect\w*|why does|race condition|security)\b/i
 const EASY = /\b(typo|rename|format|what is)\b/i
 const LONG = 2000
 const EASY_MAX = 300 // a long prompt that says "rename" is rarely just a rename
@@ -38,7 +38,7 @@ const TASK = /\b(add|build|write|fix|implement|create|refactor|make|change|remov
 const fast = (text: string): Verdict | 'keep' | undefined => {
   if (text.trim() === '' || CONTINUE.test(text)) return 'keep'
   if (text.trim().length < FOLLOW_MAX && !TASK.test(text) && !HARD.test(text) && !EASY.test(text)) return 'keep'
-  if (text.length > LONG || HARD.test(text)) return { tier: 'L', effort: 'high', reason: 'fast: hard' }
+  if (HARD.test(text)) return { tier: 'L', effort: 'high', reason: 'fast: hard' }
   if (text.length < EASY_MAX && EASY.test(text)) return { tier: 'S', effort: 'low', reason: 'fast: easy' }
 }
 
@@ -65,6 +65,8 @@ export async function route(text: string, ctx: Ctx = {}): Promise<Decision | und
     const v = await b.ask(text).catch(() => undefined)
     if (v) return prior && v.tier !== 'L' ? { ...prior, source: 'prior' } : { ...v, source: b.name }
   }
+  // A long prompt is often a detailed spec for a plain job, so the judges read it first; with none to answer, long means L.
+  if (!ctx.agentType && text.length > LONG) return { tier: 'L', effort: 'high', reason: 'fast: long', source: 'fast' }
   if (prior) return { ...prior, source: 'prior' }
   if (ctx.prev) return { ...ctx.prev, source: 'prev' }
   return { ...DEFAULT, source: 'default' }

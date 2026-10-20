@@ -18,12 +18,19 @@ test('fast path table', async () => {
     ['fix the typo in README', 'S'],
     ['rename foo to bar', 'S'],
     ['what is a mutex', 'S'],
-    ['design the auth layer', 'L'],
+    ['architect the auth layer', 'L'],
+    ['fix the design typo in plan.md', 'S'],
     ['why does this deadlock', 'L'],
     ['what is the security risk here', 'L'],
-    ['x'.repeat(2500), 'L'],
+    ['x'.repeat(2500), 'L'], // no judge to ask: long means L
   ]
   for (const [text, tier] of table) expect((await route(text))?.tier).toBe(tier)
+})
+
+test('a long prompt is read by the judge, not sent to Opus by length alone', async () => {
+  const spec = 'Update the loader and run the tests. '.repeat(100)
+  expect((await route(spec, { backends: [says('M')] }))?.tier).toBe('M')
+  expect((await route(spec, { backends: [dead] }))?.tier).toBe('L')
 })
 
 test('continuations keep prev, else default', async () => {
