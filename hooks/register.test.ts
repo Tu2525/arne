@@ -622,7 +622,7 @@ test('a subagent gets its model at spawn: never dearer than the chat, effort at 
   expect(spawned.slice(2)).toEqual(['opus', undefined])
 })
 
-test('a long brief is no Opus subagent; a moved one is said on its call; Subagents off and an asked model pass through; the panel counts and toggles them (17x)', async ($: any, on: any) => {
+test('a long brief is no Opus subagent; a moved one is said on its call; Subagents off and an asked model pass through; the panel counts them beside an On/Off segment (17x, band fix 6)', async ($: any, on: any) => {
   const { clock } = engine(on, 'claude-sonnet-5-5')
   on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
   const notices: { tool_use_id: string; text?: string }[] = []
@@ -643,11 +643,12 @@ test('a long brief is no Opus subagent; a moved one is said on its call; Subagen
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
   await $.ui.press({ plugin: 'arne', key: 'band' })
   for (let i = 0; i < 3; i++) await clock.settle()
-  expect(await band.find({ type: 'Text', text: 'Subagents: 2 routed this chat (1 to Haiku, 1 kept, 1 as asked)' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '2 routed this chat (1 to Haiku, 1 kept, 1 as asked)' })).toBeDefined()
 
-  await $.ui.press({ plugin: 'arne', key: 'subs' })
+  expect(await band.find({ type: 'Text', text: 'Subagents' })).toBeDefined()
+  await $.ui.press({ plugin: 'arne', key: 'subs-off' })
   for (let i = 0; i < 3; i++) await clock.settle()
-  expect(await band.find({ type: 'Text', text: 'Subagents: left on the model they ask for' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'left on the model they ask for' })).toBeDefined()
   const n = got.length
   await spawn('t4')
   expect(got[n]).toEqual({ tool_use_id: 't4', prompt: 'Design the plan: '.padEnd(5000, 'x'), description: 'a task', subagentType: 'general-purpose', parentModel: 'claude-sonnet-5-5', background: false, fork: false })
@@ -670,4 +671,50 @@ test('two arne plugins enabled: a write finds the row arne owns; two rows of its
   expect(s.toasts.at(-1)).toBe('Could not change subagents: no /config row with key arne.subagents ($.config.list names them)')
   s.rowPrefix = undefined
   await $.command.run({ command: 'arne', args: 'subagents on' })
+})
+
+test('a new chat: the band names the running model, the panel says no "picked" and no Haiku note off Haiku; on Haiku it does (band fixes 1, 2)', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
+  expect(await band.find({ type: 'Text', text: /auto · Sonnet/ })).toBeDefined()
+  await band.press({ key: 'band' })
+  expect(await band.find({ type: 'Text', text: /picked/ }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: 'Haiku takes no effort' }).catch(() => undefined)).toBeUndefined()
+})
+
+test('a new Haiku chat says Haiku takes no effort (band fix 1)', async ($: any, on: any) => {
+  engine(on, 'claude-haiku-5-5')
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
+  await band.press({ key: 'band' })
+  expect(await band.find({ type: 'Text', text: 'Haiku takes no effort' })).toBeDefined()
+})
+
+test('the costs table holds the one Handoff, best on its row; the Laya line shows once a chat; narrow notes are bare words (band fixes 3, 4, 7)', async ($: any, on: any) => {
+  await stickyOpus($, on)
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 120 }, viewport: { columns: 120, rows: 40 } })
+  await band.press({ key: 'band' })
+  expect(await band.find({ type: 'Button', text: 'Handoff to Sonnet' })).toBeDefined()
+  expect(await band.find({ type: 'Button', text: 'Handoff…' }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /\d a turn.* · best$/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^Ratings train Laya/ })).toBeDefined()
+  await band.press({ key: 'band' })
+  await band.press({ key: 'band' })
+  expect(await band.find({ type: 'Text', text: /^Ratings train Laya/ }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Button', text: 'Good call' })).toBeDefined()
+
+  const slim = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 50 }, viewport: { columns: 50, rows: 40 } })
+  expect(await slim.find({ type: 'Text', text: /picked/ }).catch(() => undefined)).toBeUndefined()
+  expect(await slim.find({ type: 'Text', text: 'Opus' })).toBeDefined()
+})
+
+test('a cold alert on the chat’s own tier offers a new chat, not a handoff (band fix 5)', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  s.usage = { input_tokens: 50_000 }
+  for await (const _ of $.turn.step({ turnId: 't0', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  await clock.advance(2 * 60 * 60_000)
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
+  expect(await band.find({ type: 'Button', text: 'New chat on Opus' })).toBeDefined()
+  expect(await band.find({ type: 'Button', text: /^Handoff to/ }).catch(() => undefined)).toBeUndefined()
 })

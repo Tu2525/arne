@@ -77,6 +77,8 @@ const compactSendingAtom = atom({ plugin: 'arne', key: 'compactSending' } as con
 const handedOff = atom({ plugin: 'arne', key: 'handedOff' } as const, null)
 const handoffMenu = atom({ plugin: 'arne', key: 'handoffMenu' } as const, false)
 // This chat's subagents (17x): how many arne moved to each tier, kept on their model, or ran as asked.
+// The "Ratings train Laya" line was seen this chat (closing the panel marks it).
+const layaHinted = atom({ plugin: 'arne', key: 'layaHinted' } as const, false)
 const subCount = atom({ plugin: 'arne', key: 'subCount' } as const, null)
 type SubCount = Partial<Record<Tier | 'kept' | 'asked', number>>
 const countSpawn = ($: any, k: keyof SubCount) => update($, subCount, (c: SubCount | null) => ({ ...c, [k]: ((c ?? {})[k] ?? 0) + 1 }))
@@ -157,6 +159,7 @@ ${r.text}
     await $.command.run({ command: 'clear', args: '' })
     await update($, cache, () => null) // the new chat has no cache yet
     await update($, subCount, () => null)
+    await update($, layaHinted, () => false)
     step = '/model'
     // Pinned after the clear: a pin belongs to the chat it was set in.
     await setPinPart($, { tier }, false)
@@ -719,6 +722,7 @@ export const register: Register = (on, options) => {
     await update($, compactSendingAtom, () => false)
     await update($, disabling, () => false)
     await update($, subCount, () => null)
+    await update($, layaHinted, () => false)
     await $.command.register({
       name: 'arne',
       description: 'Auto model and effort routing: on, off, pin, unpin, handoff, subagents, why, log, stats, backend, debug',
@@ -1082,7 +1086,8 @@ export const register: Register = (on, options) => {
     const pin = (await settings($)).pin
     const whyIsOpen = await read($, whyOpen)
     const picker = await read($, appPicker)
-    const running = await read($, sessionModel)
+    // Before the first turn (a new chat, a reload) no turn has said the model yet: ask the session (2).
+    const running: string | null = (await read($, sessionModel)) ?? (await Promise.resolve($.session.model()).catch(() => null)) ?? null
     const offer = await coldOffer($, now)
     const pinned = Boolean(pin?.tier || pin?.effort)
     const thankedKey = await read($, thanked)
@@ -1111,7 +1116,7 @@ export const register: Register = (on, options) => {
     }
     // Paused or off, arne sends nothing of its own: show what the app runs, never the last decision.
     const mode = await modeOf($)
-    const appModel = mode === 'on' ? undefined : ((await read($, sessionModel)) ?? undefined)
+    const appModel = mode === 'on' ? undefined : (running ?? undefined)
     const band = forced
       ? bandText(sample[forced.state as BandState])
       : bandText({
@@ -1130,12 +1135,16 @@ export const register: Register = (on, options) => {
     const open = whyIsOpen // the whyOpen atom now holds "panel open"
     // Closing the panel also clears the handoff note.
     const toggle = async () => {
+      // The Laya line shows on the first open of a chat only: closing the panel marks it seen (4).
+      if (open) await update($, layaHinted, () => true)
       await update($, whyOpen, o => !o)
       await update($, handedOff, () => null)
     }
-    const runModel = appModel ?? (l ? l.model : running ?? MODEL.M)
+    // The model the chat really runs, when known; MODEL.M only stands in for the words.
+    const realModel = appModel ?? l?.model ?? running ?? undefined
+    const runModel = realModel ?? MODEL.M
     const modelWord = shortModel(runModel)
-    const effortWord = tierOf(runModel) === 'S' ? '' : ((mode === 'on' ? l?.effort : await read($, appEffort)) ?? '')
+    const effortWord = tierOf(runModel) === 'S' ? '' : ((mode === 'on' && l ? l.effort : await read($, appEffort)) ?? '')
     // A decision the chat's cache holds back: the band says which model it wanted and that the switch waits.
     const waiting = l?.waitFor && tierOf(l.waitFor) !== tierOf(l.model) ? l.waitFor : undefined
     const reason =
@@ -1149,6 +1158,9 @@ export const register: Register = (on, options) => {
     // Auto picked this model and effort (no pin, no wait on the cache): the band says it was routed.
     const routedNow = Boolean(l) && !pinned && !waiting
     const modelText = `${routedNow ? 'auto · ' : ''}${modelWord}${effortWord ? ` · ${effortWord}` : ''}${routedNow && !narrow ? ' (routed)' : ''}`
+    // The resting line with no decision yet: the model and effort the chat runs, never a bare "auto" (2).
+    const decided = Boolean(l) || band.state === 'routing'
+    const lineText = decided ? modelText : realModel ? `${pinned ? '' : 'auto · '}${modelText}` : 'auto'
     const minutes = Math.ceil(left / 60_000)
     const chatK = c ? `${Math.round(c.C / 1000)}k` : ''
     // The cache text in three lengths; the resting line picks the longest that fits (fitRest).
@@ -1181,7 +1193,7 @@ export const register: Register = (on, options) => {
     )
     const lastNote = lastCost > 0 ? ` Last turn $${lastCost.toFixed(2)}.` : ''
     // The resting line at this width: the head never shrinks, the reason fills the rest, the cache steps down.
-    const head = `arne  ${modelText}`
+    const head = `arne  ${lineText}`
     // The card's border and padding take 4 columns, the chevron 2, the cache dot 2, the arne mark 2.
     const rest = fitRest(cols - (c ? 10 : 8), head, reason, c ? [cacheLong, cacheMid, cacheShort] : [''])
     const why = judgeDown
@@ -1223,11 +1235,22 @@ export const register: Register = (on, options) => {
     const parts = [...moved, subs.kept && `${subs.kept} kept`, subs.asked && `${subs.asked} as asked`].filter(Boolean)
     const routedN = (['S', 'M', 'L', 'kept'] as const).reduce((n, k) => n + (subs[k] ?? 0), 0)
     const subLine = !live.subagents
-      ? 'Subagents: left on the model they ask for'
+      ? narrow ? '' : 'left on the model they ask for'
       : parts.length
-        ? `Subagents: ${routedN} routed this chat (${parts.join(', ')})`
-        : 'Subagents: none yet this chat'
+        ? narrow ? `${routedN} routed` : `${routedN} routed this chat (${parts.join(', ')})`
+        : narrow ? '' : 'none yet this chat'
+    const hinted = await read($, layaHinted)
+    // Haiku's note only when the chat really runs Haiku; "picked" only after a decision (1, 7).
+    const effortNote = pin?.effort
+      ? 'pinned'
+      : l && effortWord
+        ? narrow ? effortWord : `picked ${effortWord}`
+        : realModel && tierOf(realModel) === 'S' && !narrow
+          ? 'Haiku takes no effort'
+          : ''
     const alertTier = await handoffTier($)
+    // A handoff to the chat's own tier only starts a new chat: say that (5).
+    const alertLabel = c && alertTier === c.model ? `New chat on ${name(alertTier)}` : `Handoff to ${name(alertTier)}`
     return (
       <Box flexDirection="column" rowGap={gui ? 1 : 0}>
         {effortOn &&
@@ -1256,7 +1279,7 @@ export const register: Register = (on, options) => {
             coldLine,
             busy ?? [
               <Button key="compact" variant="primary" label="Summarize" onPress={() => compactNow($, '')} />,
-              <Button key="handoff" plain label={`Handoff to ${name(alertTier)}`} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
+              <Button key="handoff" plain label={alertLabel} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
               <Button key="continue" plain role="dismiss" label="Dismiss" onPress={async () => {
                   // One Dismiss covers the whole cold spell: the heavy alert would otherwise take its place.
                   const until = offer.c.warmUntil[offer.c.model] ?? 0
@@ -1279,7 +1302,7 @@ export const register: Register = (on, options) => {
             busy ?? [
               // role="dismiss" only tells the surface how to draw it; the press itself hides the alert for this cold spell.
               <Button key="dismiss" plain role="dismiss" label="Dismiss" onPress={() => update($, heavyDismissed, () => c.warmUntil[c.model] ?? 0)} />,
-              <Button key="handoff" plain label={`Handoff to ${name(alertTier)}`} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
+              <Button key="handoff" plain label={alertLabel} onPress={(p: any) => handoff($, alertTier, p?.surface)} />,
               <Button key="compact-send" variant="primary" label="Summarize, then continue" onPress={() => compactThenContinue($)} />,
             ],
           )}
@@ -1304,11 +1327,7 @@ export const register: Register = (on, options) => {
                 <Box key="band-line" flexDirection="row" alignItems="center" gap={1}>
                   <Text color="claude">◆</Text>
                   <Text bold>arne</Text>
-                  {l || band.state === 'routing' ? (
-                    <Text>{modelText}</Text>
-                  ) : (
-                    <Text color="subtle">auto</Text>
-                  )}
+                  <Text color={decided ? undefined : 'subtle'}>{lineText}</Text>
                   <Box flexGrow={1} flexShrink={1} minWidth={0}>
                     {reason !== '' && <Text color="subtle" wrap="truncate-end">{reason}</Text>}
                   </Box>
@@ -1321,11 +1340,7 @@ export const register: Register = (on, options) => {
                 <Button key="band" plain onPress={toggle}>
                   <Text color="claude">◆ </Text>
                   <Text bold>arne</Text>
-                  {l || band.state === 'routing' ? (
-                    <Text>{`  ${modelText}`}</Text>
-                  ) : (
-                    <Text color="subtle">  auto</Text>
-                  )}
+                  <Text color={decided ? undefined : 'subtle'}>{`  ${lineText}`}</Text>
                   {rest.reason !== '' && <Text color="inactive">{`  ${rest.reason}`}</Text>}
                 </Button>
                 {/* The cache and the chevron sit at the right end, as in the design. The dot carries warm, cooling or cold. */}
@@ -1345,7 +1360,7 @@ export const register: Register = (on, options) => {
                   {/* Each row: a fixed-width label, the segments as one group that never splits, then the note. */}
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
                     <Box flexDirection="row" alignItems="center" flexShrink={0}>
-                      <Box width={7} flexShrink={0}>
+                      <Box width={10} flexShrink={0}>
                         <Text color="subtle">Model</Text>
                       </Box>
                       {segment(
@@ -1355,11 +1370,12 @@ export const register: Register = (on, options) => {
                         v => void setPinPart($, { tier: v === 'auto' ? undefined : TIER_OF[v] }),
                       )}
                     </Box>
-                    <Text color="subtle">{pin?.tier ? 'pinned' : `picked ${modelWord}`}</Text>
+                    {/* No decision, no "picked"; narrow, the bare word, so the row stays one line (1, 7). */}
+                    {(pin?.tier || l) && <Text color="subtle">{pin?.tier ? 'pinned' : narrow ? modelWord : `picked ${modelWord}`}</Text>}
                   </Box>
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
                     <Box flexDirection="row" alignItems="center" flexShrink={0}>
-                      <Box width={7} flexShrink={0}>
+                      <Box width={10} flexShrink={0}>
                         <Text color="subtle">Effort</Text>
                       </Box>
                       {segment(
@@ -1375,47 +1391,58 @@ export const register: Register = (on, options) => {
                         v => void setPinPart($, { effort: v === 'auto' ? undefined : (v as Pin['effort']) }),
                       )}
                     </Box>
-                    <Text color="subtle">{pin?.effort ? 'pinned' : effortWord ? `picked ${effortWord}` : 'Haiku takes no effort'}</Text>
+                    {effortNote !== '' && <Text color="subtle">{effortNote}</Text>}
                   </Box>
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Text>{why}</Text>
+                    {/* The two ratings are one group that never splits (4). */}
                     {l && !pinned && thankedKey !== l.key && (
-                      <Box flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} gap={1}>
+                      <Box flexDirection="row" flexShrink={0} gap={1}>
                         <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
                         <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
                       </Box>
                     )}
                     {l && !pinned && thankedKey === l.key && <Text color="subtle">Saved for Laya's training.</Text>}
                   </Box>
-                  {/* What a rating is for, under the two buttons (17v). */}
-                  {l && !pinned && thankedKey !== l.key && <Text color="subtle">Ratings train Laya, your local judge. Saved only on this machine.</Text>}
+                  {/* What a rating is for, under the two buttons (17v): once a chat, not on every open (4). */}
+                  {l && !pinned && !hinted && thankedKey !== l.key && <Text color="subtle">Ratings train Laya, your local judge. Saved only on this machine.</Text>}
                   {costs.length > 0 && (
                     <Box flexDirection="column">
                       {costs.map(r => (
-                        <Box key={`cost-${r.key}`} flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
-                          <Box flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={1}>
+                        <Box key={`cost-${r.key}`} flexDirection="row" alignItems="center" columnGap={2}>
+                          {/* The handoff row's label is its button, so the button never sits on a line of its own (3). */}
+                          {r.tier && !busy ? (
+                            <Button key="handoff-row" plain label={r.label} onPress={(p: any) => handoff($, r.tier!, p?.surface)} />
+                          ) : (
                             <Text>{r.label}</Text>
-                            <Text color="subtle">{r.money}</Text>
-                            {r.best && <Text color="subtle">best</Text>}
+                          )}
+                          <Box flexShrink={1}>
+                            <Text color="subtle">{`${r.money}${r.best ? ' · best' : ''}`}</Text>
                           </Box>
-                          {r.tier && (busy ?? <Button key="handoff-row" plain label={`Handoff to ${name(r.tier)}`} onPress={(p: any) => handoff($, r.tier!, p?.surface)} />)}
                         </Box>
                       ))}
                     </Box>
                   )}
                   {/* What arne did with this chat's subagents, and the switch for it (17x). */}
-                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
-                    <Text color="subtle">{subLine}</Text>
-                    <Button key="subs" plain label={`Route subagents: ${live.subagents ? 'on' : 'off'}`} onPress={() => setOption($, 'subagents', !live.subagents)} />
+                  <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+                    <Box flexDirection="row" alignItems="center" flexShrink={0}>
+                      <Box width={10} flexShrink={0}>
+                        <Text color="subtle">Subagents</Text>
+                      </Box>
+                      {segment('subs', [{ value: 'on', label: 'On' }, { value: 'off', label: 'Off' }], live.subagents ? 'on' : 'off', v => void setOption($, 'subagents', v === 'on'))}
+                    </Box>
+                    {subLine !== '' && <Text color="subtle">{subLine}</Text>}
                   </Box>
                   {doneTo && <Text color="subtle">{`Handed off to ${name(doneTo as Tier)}. Old chat saved in history; archive it from the sidebar when you are done.`}</Text>}
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Box flexDirection="row" flexWrap="wrap" gap={2}>
                       <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
                       <Button key="gear" plain label="Settings" onPress={() => $.ui.open({ id: SETTINGS, title: 'arne settings' })} />
-                      {busy ?? <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />}
+                      {/* While the costs table shows, its handoff row is the one Handoff (3). */}
+                      {costs.length === 0 && (busy ?? <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />)}
                       {menuOpen &&
                         !busy &&
+                        costs.length === 0 &&
                         (['S', 'M', 'L'] as Tier[]).map(t => (
                           <Button key={`handoff-${TIER_NAME_OF[t]}`} plain label={`to ${name(t)}`} onPress={(p: any) => handoff($, t, p?.surface)} />
                         ))}
