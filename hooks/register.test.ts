@@ -201,7 +201,11 @@ test('the Judge row set to Laya sets backend laya, and Settings says what Laya i
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend laya')
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 30 } })
   await $.command.run({ command: 'arne', args: 'settings' })
-  expect(await pane.find({ type: 'Text', text: /^Laya is a judge that runs on this machine/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Laya runs on this machine and learns from your ratings.' })).toBeDefined()
+  // The Jev note takes the Laya note's place while Jev is the judge.
+  expect(await pane.find({ type: 'Text', text: /^Jev is hosted/ }).catch(() => undefined)).toBeUndefined()
+  await $.config.set({ key: 'arne.backend', value: 'jev' })
+  expect(await pane.find({ type: 'Text', text: 'Jev is hosted: prompts leave this machine (needs TYPESAFE_API_KEY).' })).toBeDefined()
 })
 
 test('a pin from the band or /arne pin moves /model at once, before any prompt (17f)', async ($: any, on: any) => {
@@ -866,6 +870,45 @@ test('Settings starts with ‹ Back, then its title; the Judge row offers Jev; L
   expect(await band.find({ type: 'Text', text: 'Limits' })).toBeDefined()
   expect(await band.find({ key: 'effortCeiling-medium' })).toMatchObject({ props: { label: 'Med' } })
   expect(await band.find({ type: 'Text', text: 'Also in /config.' })).toBeDefined()
+})
+
+// The kit draws no paint, so a view's height is counted from its tree, as the terminal lays it out: a Text
+// or Button is a row, a border adds two, a column stacks its children with its gap, a row puts them side by side.
+// No wrapping is counted here; the widths are checked on their own.
+function rowsOf(n: any): number {
+  if (!n || typeof n !== 'object') return 0
+  if (n.type === 'Text' || n.type === 'Button') return 1
+  const p = n.props ?? {}
+  const kids = (n.children ?? []).filter((c: any) => c && typeof c === 'object')
+  const inner =
+    p.flexDirection === 'column'
+      ? kids.reduce((sum: number, c: any) => sum + rowsOf(c), 0) + (p.gap ?? 0) * Math.max(0, kids.length - 1)
+      : Math.max(0, ...kids.map(rowsOf))
+  return inner + (p.borderStyle ? 2 : 0)
+}
+
+test('Settings fits the band: side by side from 90 columns in at most 12 rows, stacked at 50, one line per note', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  await $.command.run({ command: 'arne', args: 'backend jev' })
+  const wide = await $.ui.mount(band100)
+  await $.command.run({ command: 'arne', args: 'settings' })
+  expect((await wide.find({ key: 'settings-cards' })).props.flexDirection).toBe('row')
+  // 12 rows is the main panel with its costs table, which fits under the app's half-window cap.
+  expect(rowsOf(await wide.find({ key: 'settings-view' }))).toBeLessThanOrEqual(12)
+  const notes = (await wide.findAll({ type: 'Text' })).filter((x: any) => x.props.size === 'footnote')
+  expect(notes.length).toBeGreaterThan(0)
+  for (const note of notes) expect(note.text.length).toBeLessThanOrEqual(96)
+  // A choice row fits a half-width card's 45 columns (100 less the gap, halved, less border and padding): its label,
+  // the column gap, each segment's label and a gap, and two for the picked segment's padding.
+  for (const key of ['auto', 'backend', 'subagents', 'modelFloor', 'modelCeiling', 'effortFloor', 'effortCeiling']) {
+    const row = (await wide.findAll({ type: 'Button' })).filter((b: any) => b.key?.startsWith(`${key}-`))
+    const label = { auto: 'Auto routing', backend: 'Judge', subagents: 'Subagents', modelFloor: 'Cheapest model', modelCeiling: 'Strongest model', effortFloor: 'Lowest effort', effortCeiling: 'Highest effort' }[key]!
+    expect(label.length + 2 + row.reduce((w: number, b: any) => w + b.props.label.length + 1, 0) + 2).toBeLessThanOrEqual(45)
+  }
+  await wide.unmount()
+  const narrow = await $.ui.mount({ ...band100, props: { bodyColumns: 50 }, viewport: { columns: 50, rows: 40 } })
+  await $.command.run({ command: 'arne', args: 'settings' })
+  expect((await narrow.find({ key: 'settings-cards' })).props.flexDirection).toBe('column')
 })
 
 test('the panel: the why sentence, then one footnote with the last turn\'s cost; Settings, Stats and Handoff… left, Turn off right', async ($: any, on: any) => {

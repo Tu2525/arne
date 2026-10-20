@@ -700,7 +700,7 @@ function viewHead($: any, { Box, Button, Text }: any, title: string) {
 
 // The panel's Settings view: a label and a segmented control per row. A press shows the new value at
 // once, then writes it through $.config.set (setOption), so the panel and /config never disagree.
-function settingsView($: any, { Box, Button, Text }: any, gui: boolean) {
+function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: number) {
   const choice = (label: string, key: keyof Live, options: { value: unknown; label: string }[]) => {
     const set = (value: unknown) => setOption($, key, value)
     return (
@@ -719,13 +719,12 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean) {
     )
   }
   // Each group: a caption over a bordered card of rows, as in the design's inset lists.
-  const card = (title: string, rows: unknown[], note?: string) => (
-    <Box key={`card-${title}`} flexDirection="column">
+  const card = (title: string, rows: unknown[]) => (
+    <Box key={`card-${title}`} flexDirection="column" flexGrow={1}>
       <Text size="footnote" dimColor>{title}</Text>
       <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={gui ? undefined : 1}>
         {rows as any}
       </Box>
-      {note && <Text size="footnote" dimColor>{note}</Text>}
     </Box>
   )
   const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
@@ -734,9 +733,9 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean) {
   return (
     <Box key="settings-view" flexDirection="column" gap={1}>
       {viewHead($, { Box, Button, Text }, 'Settings')}
-      {card(
-        'Routing',
-        [
+      {/* The band is at most half the window and scrolls past that: from 90 columns the cards sit side by side. */}
+      <Box key="settings-cards" flexDirection={cols >= 90 ? 'row' : 'column'} gap={cols >= 90 ? 2 : 1}>
+        {card('Routing', [
           choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }]),
           choice('Judge', 'backend', [
             { value: 'heuristic', label: 'Rules' },
@@ -745,16 +744,21 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean) {
             { value: 'jev', label: 'Jev' },
           ]),
           choice('Subagents', 'subagents', [{ value: true, label: 'On' }, { value: false, label: 'Off' }]),
-        ],
-        'Laya is a judge that runs on this machine. Your Good call and Wrong call ratings train it. Jev is TypeSafe’s hosted judge: your prompts leave this machine, and it needs TYPESAFE_API_KEY.',
-      )}
-      {card('Limits', [
-        choice('Cheapest model', 'modelFloor', MODELS),
-        choice('Strongest model', 'modelCeiling', MODELS),
-        choice('Lowest effort', 'effortFloor', EFFORTS),
-        choice('Highest effort', 'effortCeiling', EFFORTS),
-      ])}
-      <Text size="footnote" dimColor>Also in /config.</Text>
+        ])}
+        {card('Limits', [
+          choice('Cheapest model', 'modelFloor', MODELS),
+          choice('Strongest model', 'modelCeiling', MODELS),
+          choice('Lowest effort', 'effortFloor', EFFORTS),
+          choice('Highest effort', 'effortCeiling', EFFORTS),
+        ])}
+      </Box>
+      <Box key="settings-notes" flexDirection="column">
+        {/* One note about the judges, so the view stays inside the band's height cap: Jev's while it is the judge. */}
+        <Text size="footnote" dimColor>
+          {live.backend === 'jev' ? 'Jev is hosted: prompts leave this machine (needs TYPESAFE_API_KEY).' : 'Laya runs on this machine and learns from your ratings.'}
+        </Text>
+        <Text size="footnote" dimColor>Also in /config.</Text>
+      </Box>
     </Box>
   )
 }
@@ -1536,7 +1540,7 @@ export const register: Register = (on, options) => {
               )}
               {open && view === 'settings' && (
                 <Box flexDirection="column" marginTop={1}>
-                  {settingsView($, { Box, Button, Text }, gui)}
+                  {settingsView($, { Box, Button, Text }, gui, cols)}
                 </Box>
               )}
               {open && view === 'stats' && (
