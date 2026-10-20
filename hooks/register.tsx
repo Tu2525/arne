@@ -131,6 +131,17 @@ async function compactNow($: any, note: string): Promise<boolean> {
   }
 }
 
+// Card colours. On a dark theme the prompt box's outline colour, so arne's cards match it. No fill: it paints a square box behind the rounded border; any other theme keeps its keys.
+let CARD: { border: string } = { border: 'promptBorder' }
+let cardSynced = false
+async function syncCard($: any) {
+  if (cardSynced) return
+  const row = (await $.config.list().catch(() => [])).find((r: any) => r.key === 'theme')
+  if (!row) return
+  cardSynced = true
+  if (String(row.value).startsWith('dark')) CARD = { border: '#4d4d4c' }
+}
+
 // --- Handoff (17o, 17w) ---
 // Haiku summarizes the chat into arne-handoff.md and the clipboard. Setting Handoff = newchat (default): a
 // toast asks the person to open a new chat on `tier` and paste; no plugin call opens a chat or pastes into
@@ -750,7 +761,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
   const card = (title: string, rows: unknown[], note?: unknown) => (
     <Box key={`card-${title}`} flexDirection="column" flexGrow={1}>
       <Text size="footnote" dimColor>{title}</Text>
-      <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1} rowGap={gui ? 1 : 0}>
+      <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1} rowGap={gui ? 1 : 0}>
         {rows as any}
       </Box>
       {note as any}
@@ -821,7 +832,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
   const tile = (name: string, base: number) => {
     const t = savedText(st.spent, base)
     return (
-      <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1} flexGrow={1}>
+      <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1} flexGrow={1}>
         <Text size="footnote" dimColor>{`Against ${name}`}</Text>
         <Text weight="semibold" tabular>{t.headline}</Text>
         <Text size="footnote" dimColor tabular>{t.sub}</Text>
@@ -853,7 +864,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
             {tile('Opus · medium', st.opus)}
             {tile('Sonnet · medium', st.sonnet)}
           </Box>
-          <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+          <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1}>
             {([['With arne', st.spent], ['Sonnet · medium', st.sonnet], ['Opus · medium', st.opus]] as const).map(([label, v]) => (
               <Box key={`bar-${label}`} flexDirection="column">
                 <Box flexDirection="row" justifyContent="space-between">
@@ -866,7 +877,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
           </Box>
           <Box flexDirection="column">
             <Text size="footnote" dimColor>Where it went</Text>
-            <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+            <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1}>
               {st.lines.map(l => (
                 <Box key={`line-${l.label}`} flexDirection="row" columnGap={2}>
                   <Box flexGrow={1}>
@@ -1341,6 +1352,7 @@ export const register: Register = (on, options) => {
     // The desktop draws a Button as its own native button and flattens Text children into one plain label,
     // so there the resting line is styled Text in a row and only the chevron is the button.
     const gui = e.surface !== 'terminal'
+    await syncCard($)
     const heldText = await read($, held)
     const pin = (await settings($)).pin
     const open = await read($, whyOpen) // the whyOpen atom holds "panel open"
@@ -1578,7 +1590,7 @@ export const register: Register = (on, options) => {
               <Button key="compact-send" variant="primary" label={`Summarize, then continue · $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}`} onPress={() => compactThenContinue($)} />,
             ],
           )}
-        <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={1}>
+        <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1}>
           {mode === 'paused' ? (
             <Box flexDirection="row" gap={1}>
               <Text color="claude">◆</Text>
