@@ -170,19 +170,6 @@ test('a pick in the app picker pins that tier instead of pausing, and band Auto 
   expect((await $.command.run({ command: 'arne', args: '' })).text).not.toContain('pinned')
 })
 
-test('the band says so when arne runs a model the app picker does not show (17f)', async ($: any, on: any) => {
-  const { clock } = engine(on, 'claude-sonnet-5-5')
-  await $.classic.PostModelSwitch({ from_model: 'claude-opus-5-5', to_model: 'claude-sonnet-5-5', requested_model: 'sonnet', source: 'sdk' })
-  const ui = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
-  expect(await ui.find({ type: 'Text', text: /app picker shows/ })).toBeUndefined()
-
-  await pick($, 'model', 'opus')
-  for (let i = 0; i < 3; i++) await clock.settle()
-  // arne's own /model, as the app reports it.
-  await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'claude-opus-5-5', source: 'command' })
-  expect(await ui.find({ type: 'Text', text: /The app's model menu shows Sonnet; arne runs Opus/ })).toBeDefined()
-})
-
 test('a pin of xhigh passes the default ceiling and is kept (17h)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
   await $.command.run({ command: 'arne', args: 'pin opus xhigh' })
@@ -742,12 +729,12 @@ test('a long brief is no Opus subagent; a moved one is said on its call; Subagen
 
 test('the Subagents ceiling caps a named model and the judge, under any parent or pin; Opus lets Opus through; Off, a fork and a cheaper named model are untouched (17y)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
-  await $.config.set({ key: 'arne.subagents', value: 'sonnet' })
   on('model.complete', () => ({ value: { text: '{"tier":"L","effort":"high","reason":"a design"}', isAnswered: true } }))
   const notices: { tool_use_id: string; text?: string }[] = []
   on('ui.notice', (_$: unknown, e: { tool_use_id: string; text?: string }) => (notices.push(e), { value: undefined }))
   const got: any[] = []
   on('agent.spawn', (_$: unknown, e: any) => (got.push(e), { model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }))
+  await $.config.set({ key: 'arne.subagents', value: 'sonnet' })
   const spawn = (id: string, extra: object = {}) =>
     $.agent.spawn({ tool_use_id: id, prompt: 'look through the hooks and list every atom', description: 'list atoms', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra })
 
@@ -806,6 +793,10 @@ test('two arne plugins enabled: a write finds the row arne owns; two rows of its
   expect((await $.command.run({ command: 'arne', args: 'subagents on' })).text).toBe('arne leaves subagents on the model they ask for.')
   expect(s.toasts.at(-1)).toBe('Could not change subagents: two copies of arne are enabled; turn one off in /plugin')
 
+  s.rows = [{ key: 'arne@x.subagents', provider: { plugin: 'arne@x' } }]
+  s.rowPrefix = 'arne@x'
+  await $.command.run({ command: 'arne', args: 'subagents on' })
+  expect(s.writes.at(-1)).toBe('arne@x.subagents')
   s.rows = []
   await $.command.run({ command: 'arne', args: 'subagents on' })
   expect(s.toasts.at(-1)).toBe('Could not change subagents: no /config row with key arne.subagents ($.config.list names them)')

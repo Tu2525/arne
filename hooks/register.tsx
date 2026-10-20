@@ -345,7 +345,7 @@ async function ownSet($: any, key: string, value: unknown): Promise<{ value: unk
   if (!('deny' in r) || !r.deny.includes('no /config row')) return r
   const field = key.slice(key.indexOf('.') + 1)
   const rows: { key: string; provider?: { plugin?: string } }[] = await $.config.list().catch(() => [])
-  const mine = rows.filter(row => row.provider?.plugin === 'arne' && row.key.endsWith(`.${field}`))
+  const mine = rows.filter(row => row.key.endsWith(`.${field}`) && (row.provider?.plugin ?? row.key).startsWith('arne'))
   if (mine.length > 1) return { deny: 'two copies of arne are enabled; turn one off in /plugin' }
   return mine.length && mine[0]!.key !== key ? setOnce($, mine[0]!.key, value) : r
 }
@@ -1630,8 +1630,8 @@ export const register: Register = (on, options) => {
                   </Box>
                   {handoffMath.length > 0 && (
                     <Box key="handoff-math" flexDirection="column">
-                      {handoffMath.map(h => (
-                        <Text key={`hm-${h.key}`} size="footnote" dimColor>{h.text}</Text>
+                      {handoffMath.map(m => (
+                        <Text key={`hm-${m.key}`} size="footnote" dimColor>{m.text}</Text>
                       ))}
                     </Box>
                   )}
