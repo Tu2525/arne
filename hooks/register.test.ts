@@ -650,10 +650,11 @@ test('a subagent gets its model at spawn: never dearer than the chat, effort at 
   expect((await spawn('t2', { parentModel: 'claude-haiku-5-5' })).model).toBe('claude-haiku-5-5')
 
   const before = judged
-  expect((await spawn('t3', { model: 'opus' })).model).toBe('opus')
+  // A named model at or under the Subagents ceiling (Sonnet by default) runs as asked.
+  expect((await spawn('t3', { model: 'haiku' })).model).toBe('haiku')
   expect((await spawn('t4', { fork: true })).model).toBe('claude-opus-5-5')
   expect(judged).toBe(before)
-  expect(spawned.slice(2)).toEqual(['opus', undefined])
+  expect(spawned.slice(2)).toEqual(['haiku', undefined])
 })
 
 test('a long brief is no Opus subagent; a moved one is said on its call; Subagents off and an asked model pass through; the panel footnote counts them (17x, band fix 6)', async ($: any, on: any) => {
@@ -681,12 +682,66 @@ test('a long brief is no Opus subagent; a moved one is said on its call; Subagen
   // The switch lives in Settings now; the panel keeps only the count.
   expect(await band.find({ type: 'Text', text: 'Subagents' }).catch(() => undefined)).toBeUndefined()
   await $.ui.press({ plugin: 'arne', key: 'gear' })
-  await $.ui.press({ plugin: 'arne', key: 'subagents-false' })
+  await $.ui.press({ plugin: 'arne', key: 'subagents-off' })
   for (let i = 0; i < 3; i++) await clock.settle()
   const n = got.length
   await spawn('t4')
   expect(got[n]).toEqual({ tool_use_id: 't4', prompt: 'Design the plan: '.padEnd(5000, 'x'), description: 'a task', subagentType: 'general-purpose', parentModel: 'claude-sonnet-5-5', background: false, fork: false })
-  expect((await $.command.run({ command: 'arne', args: 'subagents on' })).text).toBe('arne routes subagents.')
+  expect((await $.command.run({ command: 'arne', args: 'subagents on' })).text).toBe('arne routes subagents, Sonnet at most.')
+})
+
+test('the Subagents ceiling caps a named model and the judge, under any parent or pin; Opus lets Opus through; Off, a fork and a cheaper named model are untouched (17y)', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  on('model.complete', () => ({ value: { text: '{"tier":"L","effort":"high","reason":"a design"}', isAnswered: true } }))
+  const notices: { tool_use_id: string; text?: string }[] = []
+  on('ui.notice', (_$: unknown, e: { tool_use_id: string; text?: string }) => (notices.push(e), { value: undefined }))
+  const got: any[] = []
+  on('agent.spawn', (_$: unknown, e: any) => (got.push(e), { model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }))
+  const spawn = (id: string, extra: object = {}) =>
+    $.agent.spawn({ tool_use_id: id, prompt: 'look through the hooks and list every atom', description: 'list atoms', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra })
+
+  // Named Opus: Sonnet at medium, said on the call, and the effort holds in its steps.
+  expect((await spawn('t1', { model: 'opus' })).model).toBe('claude-sonnet-5-5')
+  expect(notices.at(-1)).toEqual({ tool_use_id: 't1', text: 'arne: Sonnet (capped from Opus)' })
+  for await (const _ of $.turn.step({ turnId: 'p1', agentId: 'a-t1', index: 0, model: 'claude-sonnet-5-5', effort: 'high', messageCount: 1 })) {
+    // drain
+  }
+  expect(s.efforts.at(-1)).toBe('medium')
+  // The judge's Opus under an Opus chat: Sonnet too. A named Haiku stays Haiku.
+  expect((await spawn('t2')).model).toBe('claude-sonnet-5-5')
+  expect((await spawn('t3', { model: 'haiku' })).model).toBe('haiku')
+  const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 100, rows: 24 } })
+  await $.ui.press({ plugin: 'arne', key: 'band' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(await band.find({ type: 'Text', text: '3 subagents routed: 1 Sonnet, 1 as asked, 1 capped' })).toBeDefined()
+  // A fork shares the parent's cache: untouched, even when it names Opus.
+  expect((await spawn('t4', { fork: true, model: 'opus' })).model).toBe('opus')
+  // A pin is the main chat's: the ceiling still holds.
+  await $.command.run({ command: 'arne', args: 'pin opus high' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect((await spawn('t5', { model: 'opus' })).model).toBe('claude-sonnet-5-5')
+  await $.command.run({ command: 'arne', args: 'unpin' })
+
+  expect((await $.command.run({ command: 'arne', args: 'subagents opus' })).text).toBe('arne routes subagents, Opus at most.')
+  expect((await spawn('t6', { model: 'opus' })).model).toBe('opus')
+  expect((await spawn('t7')).model).toBe('claude-opus-5-5')
+
+  expect((await $.command.run({ command: 'arne', args: 'subagents off' })).text).toBe('arne leaves subagents on the model they ask for.')
+  await spawn('t8', { model: 'opus' })
+  await spawn('t9')
+  expect(got.at(-2).model).toBe('opus')
+  expect(got.at(-1).model).toBe(undefined)
+  expect((await $.command.run({ command: 'arne', args: 'subagents max' })).text).toBe('Usage: /arne subagents off|haiku|sonnet|opus')
+})
+
+test('the old Subagents On/Off reads as a ceiling: true is Sonnet, false is off (17y)', async ($: any, on: any) => {
+  engine(on)
+  const band = await $.ui.mount(band100)
+  await $.command.run({ command: 'arne', args: 'settings' })
+  await $.config.set({ key: 'arne.subagents', value: false })
+  expect((await band.find({ key: 'subagents-off' })).props.variant).toBe('secondary')
+  await $.config.set({ key: 'arne.subagents', value: true })
+  expect((await band.find({ key: 'subagents-sonnet' })).props.variant).toBe('secondary')
 })
 
 test('two arne plugins enabled: a write finds the row arne owns; two rows of its own refuse with a hint; toasts carry no doubled prefix (17x)', async ($: any, on: any) => {
@@ -753,7 +808,7 @@ test('one press on each settings choice in the panel writes that setting', async
   await band.press({ key: 'band' })
   await band.press({ key: 'gear' })
   // Auto last: off, the band draws only its off line.
-  for (const [key, value] of [['backend', 'heuristic'], ['subagents', 'false'], ['modelFloor', 'sonnet'], ['modelCeiling', 'sonnet'], ['effortFloor', 'medium'], ['effortCeiling', 'high'], ['auto', 'false']]) {
+  for (const [key, value] of [['backend', 'heuristic'], ['subagents', 'off'], ['modelFloor', 'sonnet'], ['modelCeiling', 'sonnet'], ['effortFloor', 'medium'], ['effortCeiling', 'high'], ['auto', 'false']]) {
     await band.press({ key: `${key}-${value}` })
     expect(s.writes.at(-1)).toBe(`arne.${key}`)
   }
@@ -808,15 +863,15 @@ test('the costs table has fixed-width columns, a dim header, and the one Hand of
   expect(await band.find({ key: 'handoff-menu' }).catch(() => undefined)).toBeUndefined()
 })
 
-test('Subagents reads On/Off in Settings, not in the panel; no Esc hint, since no key closes the band (fixes 2, 3)', async ($: any, on: any) => {
+test('Subagents reads its ceiling in Settings, not in the panel; no Esc hint, since no key closes the band (fixes 2, 3)', async ($: any, on: any) => {
   engine(on, 'claude-sonnet-5-5')
   const band = await $.ui.mount(band100)
   await band.press({ key: 'band' })
   expect(await band.find({ type: 'Text', text: /Esc/ }).catch(() => undefined)).toBeUndefined()
   expect(await band.find({ key: 'subs-on' }).catch(() => undefined)).toBeUndefined()
   await band.press({ key: 'gear' })
-  expect((await band.find({ key: 'subagents-true' })).props.label).toBe('On')
-  expect((await band.find({ key: 'subagents-false' })).props.label).toBe('Off')
+  expect((await band.find({ key: 'subagents-off' })).props.label).toBe('Off')
+  expect((await band.find({ key: 'subagents-sonnet' })).props.label).toBe('Sonnet')
 })
 
 // --- The redesign: dim secondary text, a quiet resting line, alerts in macOS order ---

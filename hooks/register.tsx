@@ -78,9 +78,9 @@ const compactSendingAtom = atom({ plugin: 'arne', key: 'compactSending' } as con
 // The tier the last handoff went to, for the panel's note; the "Handoff…" item's tier list is open (17w).
 const handedOff = atom({ plugin: 'arne', key: 'handedOff' } as const, null)
 const handoffMenu = atom({ plugin: 'arne', key: 'handoffMenu' } as const, false)
-// This chat's subagents (17x): how many arne moved to each tier, kept on their model, or ran as asked.
+// This chat's subagents (17x): how many arne moved to each tier, kept on their model, ran as asked, or capped (17y).
 const subCount = atom({ plugin: 'arne', key: 'subCount' } as const, null)
-type SubCount = Partial<Record<Tier | 'kept' | 'asked', number>>
+type SubCount = Partial<Record<Tier | 'kept' | 'asked' | 'capped', number>>
 const countSpawn = ($: any, k: keyof SubCount) => update($, subCount, (c: SubCount | null) => ({ ...c, [k]: ((c ?? {})[k] ?? 0) + 1 }))
 // The Stats pane's three periods, parsed from the log once per open rather than on every press.
 const statsData = atom({ plugin: 'arne', key: 'stats' } as const, null)
@@ -264,7 +264,7 @@ type Live = {
   coldTokens: number
   heavyTokens: number
   continueAfterCompact: boolean
-  subagents: boolean
+  subagents: string // 17y: the dearest model a subagent may run on (haiku, sonnet, opus), or off
 }
 const DEFAULTS: Live = {
   auto: true,
@@ -277,8 +277,10 @@ const DEFAULTS: Live = {
   coldTokens: 30_000,
   heavyTokens: 150_000,
   continueAfterCompact: true,
-  subagents: true,
+  subagents: 'sonnet',
 }
+// 17y: Subagents was On/Off before it became a ceiling; On reads as Sonnet, Off as off.
+const subCeiling = (v: unknown) => (v === false || v === 'off' ? 'off' : TIER_OF[String(v)] ? String(v) : 'sonnet')
 let live: Live = { ...DEFAULTS }
 const FIELDS = Object.keys(DEFAULTS) as (keyof Live)[]
 
@@ -344,7 +346,7 @@ async function ownSet($: any, key: string, value: unknown): Promise<{ value: unk
 
 // Puts one option into `live` and onto every surface: the band (isOff), the Settings pane (liveRev), the status line.
 async function applyLive($: any, field: keyof Live, value: unknown) {
-  ;(live as Record<string, unknown>)[field] = value
+  ;(live as Record<string, unknown>)[field] = field === 'subagents' ? subCeiling(value) : value
   await update($, liveRev, n => n + 1)
   if (field === 'auto') {
     await update($, isOff, () => !value)
@@ -743,7 +745,12 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
             { value: 'laya', label: 'Laya' },
             { value: 'jev', label: 'Jev' },
           ]),
-          choice('Subagents', 'subagents', [{ value: true, label: 'On' }, { value: false, label: 'Off' }]),
+          choice('Subagents', 'subagents', [
+            { value: 'off', label: 'Off' },
+            { value: 'haiku', label: 'Haiku' },
+            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'opus', label: 'Opus' },
+          ]),
         ])}
         {card('Limits', [
           choice('Cheapest model', 'modelFloor', MODELS),
@@ -883,6 +890,7 @@ async function cacheTouched($: any, model: string, usage: unknown) {
 
 export const register: Register = (on, options) => {
   live = { ...DEFAULTS, ...(options as Partial<Live>) }
+  live.subagents = subCeiling(live.subagents)
 
   // A write to an arne.* row from /config or another plugin lands here. arne's own writes never do: the
   // app skips a plugin's own hooks, and ownWrites makes the test kit skip them the same way (17u).
@@ -1069,9 +1077,13 @@ export const register: Register = (on, options) => {
         return { text: `arne stats (an estimate: each turn's real tokens, priced again on Opus or Sonnet):\n${lines.join('\n')}` }
       }
       case 'subagents': {
-        if (rest[0] !== 'on' && rest[0] !== 'off') return { text: 'Usage: /arne subagents on|off' }
-        await setOption($, 'subagents', rest[0] === 'on')
-        return { text: live.subagents ? 'arne routes subagents.' : 'arne leaves subagents on the model they ask for.' }
+        // `on` was the old switch: it reads as the default ceiling.
+        const v = rest[0] === 'on' ? 'sonnet' : rest[0]
+        if (v !== 'off' && !TIER_OF[v ?? '']) return { text: 'Usage: /arne subagents off|haiku|sonnet|opus' }
+        await setOption($, 'subagents', v)
+        return {
+          text: live.subagents === 'off' ? 'arne leaves subagents on the model they ask for.' : `arne routes subagents, ${shortModel(MODEL[TIER_OF[live.subagents] ?? 'M'])} at most.`,
+        }
       }
       case 'handoff': {
         const named: Tier | undefined = TIER_OF[rest[0] ?? '']
@@ -1118,12 +1130,36 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // A subagent's model is picked here, before it starts (17x). Left alone: Subagents off, arne off, a pin,
-  // a fork, a teammate, a workflow agent, a resumed run, and a call that named its model (the parent asked).
+  // A subagent's model is picked here, before it starts (17x), never above the Subagents ceiling (17y). Left
+  // alone: Subagents off, arne off, a fork (it shares the parent's cache), a teammate, a workflow agent and a
+  // resumed run. A pin is the main chat's, so it does not skip this.
   on('agent.spawn', async ($, e, next) => {
     const s = await settings($)
-    if (!live.subagents || !s.enabled || s.pin || e.fork || e.isTeammate || e.workflow || e.resume) return next(e)
+    if (live.subagents === 'off' || !s.enabled || e.fork || e.isTeammate || e.workflow || e.resume) return next(e)
     const now: number = await $.clock.now()
+    const ceiling: Tier = TIER_OF[live.subagents] ?? 'M'
+    const asked = e.model ? tierOf(e.model) : undefined
+    // A model the call named runs as asked unless it is dearer than the ceiling: then the ceiling, at medium.
+    if (asked && PRICE[asked] > PRICE[ceiling]) {
+      const d: Decision = { tier: ceiling, effort: 'medium', reason: 'capped', source: 'capped' }
+      pendingPicks.push(d)
+      let r
+      try {
+        r = await next({ ...e, model: MODEL[ceiling] })
+      } finally {
+        const i = pendingPicks.indexOf(d)
+        if (i >= 0) pendingPicks.splice(i, 1)
+      }
+      if (r.agentId && !agents.has(r.agentId)) agents.set(r.agentId, d)
+      try {
+        $.ui.notice(e.tool_use_id, `arne: ${shortModel(MODEL[ceiling])} (capped from ${shortModel(MODEL[asked])})`)
+      } catch {
+        // the call is no longer open
+      }
+      await countSpawn($, 'capped')
+      await appendLog($, { key: `agent:${r.agentId ?? e.tool_use_id}`, model: MODEL[ceiling], effort: d.effort, reason: d.reason, source: d.source, out: 0, cacheRead: 0, text: e.prompt.slice(0, 4000), agent: e.subagentType, from: MODEL[asked], to: MODEL[ceiling], at: now })
+      return r
+    }
     if (e.model) {
       const r = await next(e)
       if (r.agentId) agents.set(r.agentId, undefined)
@@ -1139,9 +1175,9 @@ export const register: Register = (on, options) => {
 [This is the task Claude gave a ${e.subagentType} subagent, not a message from the person. Judge the work that subagent needs.]`
     const r0 = await route(brief, { agentType: e.subagentType, backends: backendsOf($, s.backend) })
     if (!r0) return next(e)
-    // Never dearer than the chat that sent it; effort at least medium (helpers at low miscounted).
+    // Never dearer than the chat that sent it or the Subagents ceiling; effort at least medium (helpers at low miscounted).
     const clamped = clampTier(r0.tier, live.modelFloor, live.modelCeiling)
-    const tier = PRICE[clamped] > PRICE[parent] ? parent : clamped
+    const tier = [clamped, parent, ceiling].reduce((a, b) => (PRICE[b] < PRICE[a] ? b : a))
     const effort = clampEffort(r0.effort, live.effortFloor, live.effortCeiling)
     const d: Decision = { ...r0, tier, effort: (EFFORT_RANK[effort] ?? 0) < 1 ? 'medium' : effort }
     pendingPicks.push(d)
@@ -1406,8 +1442,8 @@ export const register: Register = (on, options) => {
     const tableHandoff = costs.some(r => r.tier)
     const menuOpen = await read($, handoffMenu)
     const subs: SubCount = (await read($, subCount)) ?? {}
-    const subParts = [...(['S', 'M', 'L'] as Tier[]).filter(t => subs[t]).map(t => `${subs[t]} ${name(t)}`), subs.kept && `${subs.kept} kept`, subs.asked && `${subs.asked} as asked`].filter(Boolean)
-    const subN = (['S', 'M', 'L', 'kept', 'asked'] as const).reduce((n, k) => n + (subs[k] ?? 0), 0)
+    const subParts = [...(['S', 'M', 'L'] as Tier[]).filter(t => subs[t]).map(t => `${subs[t]} ${name(t)}`), subs.kept && `${subs.kept} kept`, subs.asked && `${subs.asked} as asked`, subs.capped && `${subs.capped} capped`].filter(Boolean)
+    const subN = (['S', 'M', 'L', 'kept', 'asked', 'capped'] as const).reduce((n, k) => n + (subs[k] ?? 0), 0)
     const why = judgeDown
       ? 'Laya is not answering, so Haiku judged.'
       : jevKeyless

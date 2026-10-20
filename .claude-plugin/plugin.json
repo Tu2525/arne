@@ -7,7 +7,7 @@
   "userConfig": {
     "auto": { "type": "boolean", "title": "Auto routing", "description": "Route each prompt and subagent run. Off leaves the session model alone.", "default": true },
     "backend": { "type": "string", "title": "Classifier", "description": "Who decides the tier. laya needs laya-serve installed. jev is TypeSafe's hosted judge: prompts leave this machine, and it needs TYPESAFE_API_KEY.", "options": ["haiku", "heuristic", "laya", "jev"], "default": "haiku" },
-    "subagents": { "type": "boolean", "title": "Route subagents", "description": "Route subagent runs too. Off leaves them on the model they were spawned with.", "default": true },
+    "subagents": { "type": "string", "title": "Subagents", "description": "The dearest model a subagent may run on, a named one too. Off leaves subagents on the model they were spawned with.", "options": ["off", "haiku", "sonnet", "opus"], "default": "sonnet" },
     "modelFloor": { "type": "string", "title": "Lowest model", "description": "Never route below this model.", "options": ["haiku", "sonnet", "opus"], "default": "haiku" },
     "modelCeiling": { "type": "string", "title": "Highest model", "description": "Never route above this model.", "options": ["haiku", "sonnet", "opus"], "default": "opus" },
     "effortFloor": { "type": "string", "title": "Lowest effort", "description": "Never think less than this.", "options": ["low", "medium", "high", "xhigh", "max"], "default": "low" },
