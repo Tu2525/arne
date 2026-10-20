@@ -38,10 +38,9 @@ test('cache clock helpers', () => {
 })
 
 test('planSwitch: real /model moves only at a boundary', () => {
-  const base = { decided: 'M' as const, chat: 'L' as const, C: 80_000, now: 1000, afterCompact: false }
+  const base = { decided: 'M' as const, chat: 'L' as const, C: 80_000, now: 1000 }
   expect(planSwitch({ ...base, warmUntil: {} })).toEqual({ tier: 'M', real: true, why: 'boundary' })
   expect(planSwitch({ ...base, warmUntil: { L: 5000 } })).toEqual({ tier: 'L', real: false, why: 'sticky' })
-  expect(planSwitch({ ...base, warmUntil: { L: 5000 }, afterCompact: true }).real).toBe(true)
   expect(planSwitch({ ...base, C: 0, warmUntil: { L: 5000 } }).why).toBe('worth')
   expect(planSwitch({ ...base, decided: 'L', warmUntil: {} }).why).toBe('same')
 })

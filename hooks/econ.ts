@@ -117,12 +117,12 @@ export function planSwitch(p: {
   C: number
   warmUntil: Partial<Record<Tier, number>>
   now: number
-  afterCompact: boolean
 }): SwitchPlan {
   const { decided, chat, C, warmUntil, now } = p
   if (decided === chat) return { tier: chat, real: false, why: 'same' }
   const warm = (t: Tier) => (warmUntil[t] ?? 0) > now
-  if (p.afterCompact || !warm(chat)) return { tier: decided, real: true, why: 'boundary' }
+  // After a compact the caller passes no warmUntil (the cache atom is cleared), so that is a boundary too.
+  if (!warm(chat)) return { tier: decided, real: true, why: 'boundary' }
   if (routeWorth(decided, chat, C, { to: warm(decided), inUse: true })) return { tier: decided, real: false, why: 'worth' }
   return { tier: chat, real: false, why: 'sticky' }
 }

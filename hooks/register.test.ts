@@ -26,6 +26,7 @@ function engine(on: any, start = 'claude-opus-5-5') {
   })
   on('config.set', (_$: unknown, e: { value: unknown }) => (s.deny ? { deny: s.deny } : { value: e.value }))
   on('classic.PostModelSwitch', () => ({}))
+  on('classic.PostCompact', () => ({}))
   on('session.model', () => ({ value: s.model }))
   on('prompt.submit', (_$: unknown, e: { text: string }) => {
     s.entered.push(e.text)
@@ -374,7 +375,7 @@ test('the judge gets the conversation so far ahead of the new prompt (17p)', asy
   expect(prompts.length).toBe(1)
   expect(prompts[0]).toContain('Conversation so far:')
   expect(prompts[0]).toContain('First prompt: build the routing plugin')
-  expect(prompts[0]).toContain('- now add the band')
+  expect(prompts[0]).toContain('Last messages:\n- user: build the routing plugin\n- assistant: ok\n- user: now add the band')
   expect(prompts[0]).toContain('Files touched: hooks/route.ts')
   expect(prompts[0]).toContain('New prompt to judge:\nrefactor the helpers in this module please')
 })
@@ -491,4 +492,16 @@ test('/arne backend sets the backend that routing reads (17u)', async ($: any, o
   engine(on, 'claude-sonnet-5-5')
   await $.command.run({ command: 'arne', args: 'backend heuristic' })
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend heuristic')
+})
+
+test('the first prompt after a compact is sent, not held, even past the TTL (17v)', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  await coldHeavy($, s, clock)
+  // The kit cannot reload the module, so nothing but state carries the compact: the cache atom, as after a reload.
+  await $.classic.PostCompact({ trigger: 'auto', compact_summary: 'summary' })
+  await clock.advance(2 * 60 * 60_000)
+  const r = await $.prompt.submit(typed('what is a mutex'))
+  expect(String((r as any).drop ?? '')).not.toContain('holding')
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(s.entered).toEqual(['what is a mutex'])
 })

@@ -148,6 +148,8 @@ ${summary}
 // --- The held prompt (step 17a) ---
 // A prompt typed on a cold, big chat waits here until the person picks Compact & send or Send anyway.
 const CONTINUE_TEXT = 'Continue where you left off.'
+// Messages a compact keeps word for word after the summary, and the judge's card reads (17v).
+const KEEP_AFTER_COMPACT = 10
 let lastReason: string | undefined // how the last main turn ended
 
 // Sends a prompt as the person's own words. A plugin's own $.prompt.submit skips that plugin's
@@ -191,7 +193,6 @@ async function sendAnyway($: any) {
 let prev: Decision | undefined
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
-let afterCompact = false // a compact just ran: the next prompt is a cache boundary
 let arneSwitched = false // arne's own /model ran: the next main turn's cache writes are the switch's (17q)
 // Decisions made at prompt.submit, by text, for the turn.start of the same prompt.
 const planned = new Map<string, Decision>()
@@ -235,10 +236,10 @@ let live: Live = { ...DEFAULTS }
 const FIELDS = Object.keys(DEFAULTS) as (keyof Live)[]
 
 // The cold offer applies: the chat model's cache is cold, the chat is past coldTokens, and this cold
-// spell was not dismissed. Right after a compact the cache numbers are stale, so no offer.
+// spell was not dismissed. A compact clears the cache atom, so there is no offer until the next response.
 async function coldOffer($: any, now: number) {
   const c: Cache | null = await read($, cache)
-  if (!c || afterCompact) return undefined
+  if (!c) return undefined
   const until = c.warmUntil[c.model] ?? 0
   if (until > now || c.C < live.coldTokens) return undefined
   if ((await read($, coldDismissed)) === until) return undefined
@@ -431,14 +432,17 @@ function projectContext($: any): Promise<string> {
 }
 
 // The judge's view of the task so far (17p), so "continue", "do it" or "B" are read against the work in hand.
-// Built from the transcript each time: the first prompt, the last 3 prompts, the last verdict, files touched,
-// the context size. At most CARD_MAX characters (~1.5k tokens). '' when the transcript cannot be read.
-const CARD_MAX = 6000
+// Built from the transcript each time: the first prompt, the last 10 messages from both sides (17v), the
+// last verdict, files touched, the context size. At most CARD_MAX characters (~2k tokens). '' when the
+// transcript cannot be read.
+const CARD_MAX = 8000
 async function taskCard($: any, c: Cache | null): Promise<string> {
   const msgs: any = await $.session.messages().catch(() => [])
   if (!Array.isArray(msgs) || msgs.length === 0) return ''
-  // Typed prompts only: a user row that carries tool results is the engine's, not the person's.
-  const prompts = msgs.filter((m: any) => m.role === 'user' && m.text.trim() && !m.toolResults?.length).map((m: any) => m.text.trim())
+  // Rows with words only: a user row that carries tool results is the engine's, not the person's.
+  const said = msgs.filter((m: any) => m.text?.trim() && !m.toolResults?.length)
+  const prompts = said.filter((m: any) => m.role === 'user').map((m: any) => m.text.trim())
+  const recent = said.slice(-KEEP_AFTER_COMPACT)
   const files = new Set<string>()
   for (const m of msgs) for (const u of m.toolUses ?? []) {
     const f = u.input?.file_path ?? u.input?.notebook_path ?? u.input?.path
@@ -447,7 +451,7 @@ async function taskCard($: any, c: Cache | null): Promise<string> {
   const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
   const lines = [
     prompts[0] && `First prompt: ${clip(prompts[0], 1200)}`,
-    prompts.length > 1 && `Recent prompts:\n${prompts.slice(1).slice(-3).map((p: string) => `- ${clip(p, 600)}`).join('\n')}`,
+    recent.length > 1 && `Last messages:\n${recent.map((m: any) => `- ${m.role}: ${clip(m.text.trim(), 500)}`).join('\n')}`,
     prev && `Previous verdict: ${TIER_NAME_OF[prev.tier]} · ${prev.effort} (${prev.reason})`,
     files.size && `Files touched: ${[...files].slice(-15).join(', ')}`,
     c && `Context: ${Math.round(c.C / 1000)}k tokens`,
@@ -520,7 +524,7 @@ async function switchTarget($: any, d: Decision): Promise<string | undefined> {
   if (!chat || d.tier === chat) return undefined
   if (d.source === 'pin') return MODEL[d.tier]
   const c: Cache | null = await read($, cache)
-  const plan = planSwitch({ decided: d.tier, chat, C: c?.C ?? 0, warmUntil: c?.warmUntil ?? {}, now: await $.clock.now(), afterCompact })
+  const plan = planSwitch({ decided: d.tier, chat, C: c?.C ?? 0, warmUntil: c?.warmUntil ?? {}, now: await $.clock.now() })
   return plan.why === 'sticky' ? undefined : MODEL[d.tier]
 }
 
@@ -598,20 +602,25 @@ async function openStats($: any) {
   await $.ui.open({ id: STATS, title: 'arne stats' })
 }
 
-// Drives the band's countdown. A reload cancels every timer and session.start does not run again, so the
-// band's render arms it too; `ticking` is module state, so a reload arms it once more. ponytail: a 1s state write.
-let ticking = false
+// Drives the band's countdown while the cache is warm. A reload cancels every timer and session.start does
+// not run again, so a response landing and a render of a warm band arm it too; `tick` is module state, so a
+// reload arms it once more. A cold cache stays cold, so the tick stops there: no write every second while
+// the chat sits idle. ponytail: a 1s state write while warm.
+let tick: { cancel: () => void } | undefined
 function armTick($: any) {
-  if (ticking) return
-  ticking = true
+  if (tick) return
   try {
-    $.clock.every(1000, async () => {
-      if ((await read($, cache)) === null) return
-      const now = await $.clock.now()
-      await update($, clockNow, () => now)
+    tick = $.clock.every(1000, async () => {
+      const c = await read($, cache)
+      const now: number = await $.clock.now()
+      await update($, clockNow, () => now) // the last one redraws the band as the cache turns cold
+      if (c === null || (c.warmUntil[c.model] ?? 0) <= now) {
+        tick?.cancel()
+        tick = undefined
+      }
     })
   } catch {
-    ticking = false
+    tick = undefined
   }
 }
 
@@ -623,12 +632,12 @@ async function cacheTouched($: any, model: string, usage: unknown) {
   const now: number = await $.clock.now()
   const since = lastResponseAt === undefined ? undefined : now - lastResponseAt
   lastResponseAt = now
-  afterCompact = false // the cache numbers below are fresh again
   await update($, cache, (c: Cache | null): Cache => {
     const ttl = nextTtl(c?.ttl ?? '5m', usage, since)
     return { ttl, C: contextOf(usage), model: tier, warmUntil: { ...c?.warmUntil, [tier]: now + CACHE_TTL[ttl] } }
   })
   await update($, clockNow, () => now)
+  armTick($)
 }
 
 export const register: Register = (on, options) => {
@@ -710,7 +719,7 @@ export const register: Register = (on, options) => {
       const sum = usageRow('summary', await $.clock.now(), r.usage, MODEL[TIER_OF[live.compactModel] ?? 'S'])
       if (sum) await appendLog($, sum)
       if ((await read($, handoffTo)) !== null) await saveHandoff($, r.text)
-      const kept = e.messages.slice(-4)
+      const kept = e.messages.slice(-KEEP_AFTER_COMPACT) // word for word after the summary (17v)
       return {
         messages: [
           { role: 'user', text: `Summary of the conversation so far (written by Haiku for arne):\n\n${r.text}`, toolUses: [] },
@@ -725,7 +734,10 @@ export const register: Register = (on, options) => {
   // A plain /compact (or Compact with nothing held) picks the work back up, once, if it stopped mid-task.
   // Compact & send skips this: its own held prompt is the one message that goes.
   on('classic.PostCompact', async ($, e, next) => {
-    afterCompact = true
+    // The cache numbers are the old chat's, and the atom outlives a reload: a stale big, expired cache
+    // made the first prompt after a compact read as a cold 100k chat and get held (17v). No cache until
+    // the next response lands (cacheTouched); planSwitch then reads the chat as a boundary.
+    await update($, cache, () => null)
     const r = await next(e)
     if (e.trigger === 'manual' && !(await read($, compactSendingAtom)) && live.continueAfterCompact && !(await read($, held)) && midTask(lastReason, e.compact_summary)) {
       $.clock.after(0, () => routeAndSend($, CONTINUE_TEXT))
@@ -829,7 +841,7 @@ export const register: Register = (on, options) => {
         const warm = (['S', 'M', 'L'] as Tier[])
           .map(t => `${MODEL[t]} ${(c.warmUntil[t] ?? 0) > now ? `warm ${mmss(c.warmUntil[t]! - now)}` : 'cold'}`)
           .join(', ')
-        return { text: `arne debug: ${await modeOf($)}, ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. expected ${(await read($, expectedAtom)) ?? 'none'}, switching ${switching}, after compact ${afterCompact}.` }
+        return { text: `arne debug: ${await modeOf($)}, ttl ${c.ttl}, C ${c.C} tokens, last ${MODEL[c.model]}. ${warm}. expected ${(await read($, expectedAtom)) ?? 'none'}, switching ${switching}.` }
       }
       default: {
         const mode = await modeOf($)
@@ -937,11 +949,11 @@ export const register: Register = (on, options) => {
     // The atom read subscribes this render to the 1s tick; the time itself comes from the clock, since the
     // tick only starts at session.start and a hot reload skips that (a frozen tick showed a stale cache state).
     await read($, clockNow)
-    armTick($)
     await read($, pinRev) // subscribes: the pin itself is read from the store, which does not
     const now: number = await $.clock.now()
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
+    if (left > 0) armTick($) // after a reload the tick is gone; a warm band starts it again
     const { Box, Button, Select, Text } = $.ui.resolve(e)
     // The width the band gets, re-read on every render: AbovePrompt's bodyColumns, else the viewport's columns.
     const cols = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80)
@@ -1213,8 +1225,10 @@ export const register: Register = (on, options) => {
                         <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
                       </Box>
                     )}
-                    {l && !pinned && thankedKey === l.key && <Text color="subtle">Logged. arne learns from this.</Text>}
+                    {l && !pinned && thankedKey === l.key && <Text color="subtle">Saved for Laya's training.</Text>}
                   </Box>
+                  {/* What a rating is for, under the two buttons (17v). */}
+                  {l && !pinned && thankedKey !== l.key && <Text color="subtle">Ratings train Laya, your local judge. Saved only on this machine.</Text>}
                   <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} justifyContent="space-between">
                     <Box flexDirection="row" gap={2}>
                       <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
