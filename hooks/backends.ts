@@ -7,7 +7,10 @@ const EFFORTS: Effort[] = ['low', 'medium', 'high']
 
 export const SYSTEM = `You route a coding-assistant prompt to a model tier. Reply with JSON only:
 {"tier":"S|M|L","effort":"low|medium|high","reason":"<6 words>"}
-S = trivial lookup or edit. M = normal coding. L = design, debugging a race, security, or long reasoning.`
+S = trivial lookup or edit, or a search, read or list (a subagent's brief to find or map code is S).
+M = normal coding, including multi-step or multi-file chores: edits, re-renders, commits, running tools.
+L = only when the hard part is the thinking: architecture, a race or subtle bug, a security review.
+Many steps is not L: the model hands searches and grunt work to cheap subagents. When unsure, pick M.`
 
 // Pure: a model reply to a verdict, or undefined when it is not one.
 export function parseVerdict(text: string): Verdict | undefined {
@@ -41,9 +44,9 @@ export function systemOneBody(text: string, task = '', model?: string): string {
         type: 'choice',
         instructions: 'How hard is this coding-assistant request?',
         criteria: {
-          S: 'trivial lookup, typo, rename, format, one-line answer',
-          M: 'normal coding task, a bounded change in one or two files',
-          L: 'design, architecture, debugging a race, security, long reasoning',
+          S: 'trivial lookup, typo, rename, format, one-line answer, a search or read of the code',
+          M: 'normal coding, including multi-step or multi-file chores: edits, re-renders, commits, running tools',
+          L: 'only when the hard part is the thinking: architecture, a race or subtle bug, a security review',
         },
       },
       effort: {
