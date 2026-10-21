@@ -556,7 +556,7 @@ async function taskCard($: any, c: Cache | null): Promise<string> {
   const lines = [
     prompts[0] && `First prompt: ${clip(prompts[0], 1200)}`,
     recent.length > 1 && `Last messages:\n${recent.map((m: any) => `- ${m.role}: ${clip(m.text.trim(), 500)}`).join('\n')}`,
-    prev && `Previous verdict: ${TIER_NAME_OF[prev.tier]} · ${prev.effort} (${prev.reason})`,
+    // No previous verdict here: the judge anchored on it and kept repeating Opus ("aight go on" → Opus).
     files.size && `Files touched: ${[...files].slice(-15).join(', ')}`,
     c && `Context: ${Math.round(c.C / 1000)}k tokens`,
   ].filter(Boolean)
