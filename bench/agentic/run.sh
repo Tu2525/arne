@@ -12,6 +12,7 @@ set -euo pipefail
 ARNE="$(cd "$(dirname "$0")/../.." && pwd)"
 EFFORTLESS="${EFFORTLESS_DIR:-$HOME/.claude/plugins/cache/effortless/effortless/1.71.0}"
 REPS="${1:-2}"; ONLY="${2:-}"
+MODEL="${MODEL:-opus}"  # haiku, sonnet or opus; CONDS picks the setups (default all three)
 export B="${ARNE_BENCH_DIR:-${TEMP:-/tmp}/arnebench}"
 mkdir -p "$B/r" "$B/w" "$B/pristine" "$B/arne-plugin"
 # Two runners at once wipe each other's workspaces (it happened once): one at a time.
@@ -33,7 +34,7 @@ grep -q "$BM/no-settings.json" "$B/arne-plugin/hooks/register.tsx" || { echo "ar
 
 one() {
   local id=$1 cond=$2 rep=$3 P PL=()
-  local tag="ab3-opus-$id-$cond-$rep" dir="$B/w/ab3-opus-$id-$cond-$rep"
+  local tag="ab3-$MODEL-$id-$cond-$rep" dir="$B/w/ab3-$MODEL-$id-$cond-$rep"
   [ -f "$B/r/$tag.json" ] && [ -s "$B/r/$tag.json" ] && { echo "$tag cached"; return 0; }
   rm -rf "$dir"; mkdir -p "$dir" && (cd "$dir" && tar --force-local -xf ../../src.tar)
   # A workspace that could not be reset would score the wrong files: skip the run, rerun it later.
@@ -51,7 +52,7 @@ one() {
   esac
   (
     export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 EFFORTLESS_LOG="$B/r/$tag.proof.log"
-    cd "$dir" && timeout 900 claude -p "$P" --model opus --effort medium "${PL[@]}" --setting-sources project \
+    cd "$dir" && timeout 900 claude -p "$P" --model "$MODEL" --effort medium "${PL[@]}" --setting-sources project \
       --disable-slash-commands --strict-mcp-config --no-session-persistence \
       --permission-mode acceptEdits --allowedTools "Read Edit Write Grep Glob Bash(node:*) Bash(ls:*) Bash(cat:*)" \
       --output-format json < /dev/null > "$B/r/$tag.json" 2> "$B/r/$tag.err"
@@ -59,7 +60,7 @@ one() {
   echo "$tag done"
 }
 
-for rep in $(seq 1 "$REPS"); do for t in t1 t2 t3 t4; do for c in m on arne; do
+for rep in $(seq 1 "$REPS"); do for t in t1 t2 t3 t4; do for c in ${CONDS:-m on arne}; do
   [ -z "$ONLY" ] || [ "$ONLY" = "$t" ] || continue
   one "$t" "$c" "$rep"
 done; done; done

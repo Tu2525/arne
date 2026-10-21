@@ -55,7 +55,7 @@ fs.writeFileSync(path.join(B, 'scored.json'), JSON.stringify(rows, null, 1))
 const label = { m: 'medium, no mods', on: 'effortless on (app on medium)', arne: 'arne on (app on medium)' }
 const sum = (a, k) => a.reduce((t, r) => t + (r[k] || 0), 0)
 const ok = rows.filter(r => !r.error)
-for (const model of ['opus']) {
+for (const model of ['haiku', 'sonnet', 'opus']) {
   const mine = ok.filter(r => r.model === model)
   if (!mine.length) continue
   const g = {}; for (const r of mine) (g[r.cond] ??= []).push(r)
