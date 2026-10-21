@@ -35,8 +35,8 @@ Any change to a file the task did not ask for fails the run.
 | --- | --- | --- | --- | --- | --- |
 | Opus medium, no mods | 15/15 | 3/3 | $0.599 | $0.120 | Opus |
 | Sonnet medium, no mods | 15/15 | 3/3 | $0.267 | $0.053 | Sonnet |
-| effortless on Opus | running | | | | |
-| effortless on Sonnet | running | | | | |
+| effortless on Opus | 15/15 | 3/3 | $0.524 | $0.105 | Opus |
+| effortless on Sonnet | 7/15 | 0/3 | $0.274 | $0.118 | Sonnet |
 | **arne, unpinned (starts on Opus)** | 13/15 | 2/3 | **$0.021** | **$0.005** | Haiku on every prompt |
 | arne pinned Haiku | 15/15 | 3/3 | $0.017 | $0.003 | Haiku |
 | arne pinned Sonnet | 14/15 | 2/3 | $0.261 | $0.056 | Sonnet |
@@ -59,7 +59,7 @@ Any change to a file the task did not ask for fails the run.
 
 1. **arne cuts cost by 80–96% at the same quality on these tasks.** Single prompt: $0.047 vs $0.228 per task on Opus. Multi-prompt: $0.021 vs $0.599 per chat.
 2. **Unpinned, arne sent everything to Haiku, and Haiku was right.** Pinned Haiku went 15/15. The judge cost is about $0.004 per chat on top.
-3. **effortless barely moves cost.** On Opus it was about 5% cheaper; on Sonnet it was slightly dearer and slightly less accurate.
+3. **effortless barely moves cost.** On Opus it was 5–13% cheaper at the same quality. On Sonnet it cost slightly more and was less accurate (multi-prompt: 7/15 against 15/15 with no mods, missing the JSDoc edit twice and the count every chat).
 4. **Pins work and add no cost.** Pinned Sonnet or Opus costs what that model costs with no mods.
 5. **Most "misses" are a test ambiguity, not a model error.** The count task's truth is 198, but `tests/effortless.test.ts:2400` has a regex `.test(t)` call, and counting it gives 199. Every model that said 199 hit this. Fix the prompt or accept both before trusting the pass rates.
 6. **These tasks are too easy to test routing.** Haiku passes all of them, so a router that always picks Haiku looks perfect. To show arne picks a bigger model when it should, the bench needs prompts Haiku fails.
