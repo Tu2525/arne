@@ -3,12 +3,14 @@ const fs = require('fs'), path = require('path'), cp = require('child_process')
 const B = process.env.ARNE_BENCH_DIR || path.join(process.env.TEMP || '/tmp', 'arnebench')
 const pristine = f => fs.readFileSync(path.join(B, 'pristine', f), 'utf8')
 const walk = (d, base = d) => fs.readdirSync(d, { withFileTypes: true }).flatMap(e =>
-  e.isDirectory() ? (['node_modules', '.git', '.claude'].includes(e.name) ? [] : walk(path.join(d, e.name), base))
+  e.isDirectory() ? (['node_modules', '.git', '.claude', '.in_use'].includes(e.name) ? [] : walk(path.join(d, e.name), base))
     : [path.relative(base, path.join(d, e.name)).replace(/\\/g, '/')])
 const pristineFiles = new Set(walk(path.join(B, 'pristine')))
 const changed = dir => walk(dir).filter(f => !pristineFiles.has(f) || fs.readFileSync(path.join(dir, f), 'utf8') !== pristine(f))
 const trueCount = (pristine('tests/effortless.test.ts').match(/(^|[^.\w])test\(/gm) || []).length
 const codeLines = s => s.split(/\r?\n/).map(l => l.replace(/\s+/g, '')).filter(l => l && !l.startsWith('/**') && !l.startsWith('*') && !l.startsWith('//'))
+// arne's own Haiku judge call is not in total_cost_usd (the host makes it). Measured at 800 calls in bench/router: $0.00047 each.
+const JUDGE_USD = Number(process.env.JUDGE_USD ?? 0.00047)
 const rows = []
 for (const f of fs.readdirSync(path.join(B, 'r')).filter(f => f.startsWith('ab3-') && f.endsWith('.json'))) {
   const tag = f.replace('.json', '')
@@ -48,11 +50,13 @@ for (const f of fs.readdirSync(path.join(B, 'r')).filter(f => f.startsWith('ab3-
     const log = fs.readFileSync(path.join(B, 'r', tag + '.proof.log'), 'utf8')
     picked = [...new Set([...log.matchAll(/effort \w+ -> (\w+)/g)].map(m => m[1]))].join('/')
   } catch {}
-  rows.push({ tag, model, task, cond, rep, ok, why, picked, cost: j.total_cost_usd, turns: j.num_turns, ms: j.duration_ms })
+  rows.push({ tag, model, task, cond, rep, ok, why, picked, cost: (j.total_cost_usd || 0) + (cond === 'arne' ? JUDGE_USD : 0), turns: j.num_turns, ms: j.duration_ms })
 }
 fs.writeFileSync(path.join(B, 'scored.json'), JSON.stringify(rows, null, 1))
 
 const label = { m: 'medium, no mods', on: 'effortless on (app on medium)', arne: 'arne on (app on medium)' }
+// Pass rate with a 95% Wilson interval: with 20 runs a setup's rate is only known to within about +-15 points.
+const pct = (k, n) => { const z = 1.96, p = k / n, d = 1 + z * z / n, c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d; return Math.round(100 * p) + '% (' + Math.round(100 * (c - h)) + '-' + Math.round(100 * (c + h)) + ')' }
 const sum = (a, k) => a.reduce((t, r) => t + (r[k] || 0), 0)
 const ok = rows.filter(r => !r.error)
 for (const model of ['haiku', 'sonnet', 'opus']) {
@@ -60,16 +64,21 @@ for (const model of ['haiku', 'sonnet', 'opus']) {
   if (!mine.length) continue
   const g = {}; for (const r of mine) (g[r.cond] ??= []).push(r)
   console.log('' + String.fromCharCode(10) + '### ' + model)
-  console.log('| Setup | Runs | Correct | API-equivalent cost | Avg API-eq cost/task | Avg requests | Avg time |')
-  console.log('| --- | --- | --- | --- | --- | --- | --- |')
+  console.log('| Setup | Runs | Correct | Pass rate (95% CI) | API-equivalent cost | Avg API-eq cost/task | Avg requests | Avg time | Cost per correct run |')
+  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const c of ['m', 'on', 'arne'].filter(c => g[c])) {
     const a = g[c]
-    console.log('| ' + label[c] + ' | ' + a.length + ' | ' + a.filter(r => r.ok).length + ' | $' + sum(a, 'cost').toFixed(2) + ' | $' + (sum(a, 'cost') / a.length).toFixed(3) + ' | ' + (sum(a, 'turns') / a.length).toFixed(1) + ' | ' + (sum(a, 'ms') / a.length / 1000).toFixed(0) + ' s |')
+    console.log('| ' + label[c] + ' | ' + a.length + ' | ' + a.filter(r => r.ok).length + ' | ' + pct(a.filter(r => r.ok).length, a.length) + ' | $' + sum(a, 'cost').toFixed(2) + ' | $' + (sum(a, 'cost') / a.length).toFixed(3) + ' | ' + (sum(a, 'turns') / a.length).toFixed(1) + ' | ' + (sum(a, 'ms') / a.length / 1000).toFixed(0) + ' s | $' + (sum(a, 'cost') / (a.filter(r => r.ok).length || NaN)).toFixed(3) + ' |')
   }
   const t = c => sum(g[c] || [], 'cost')
   if (g.arne) for (const c of ['m', 'on'].filter(c => g[c])) console.log('arne saves vs ' + label[c].split(',')[0] + ': ' + (100 * (1 - (t('arne') / g.arne.length) / (t(c) / g[c].length))).toFixed(0) + '% per task')
   const picks = {}; for (const r of g.on || []) for (const e of (r.picked || '?').split('/')) picks[e] = (picks[e] || 0) + 1
   console.log('effort effortless picked (counts): ' + JSON.stringify(picks))
+}
+{
+  const per = (m, c) => { const a = ok.filter(r => r.model === m && r.cond === c); return a.length ? sum(a, 'cost') / a.length : NaN }
+  const arne = per('opus', 'arne'), son = per('sonnet', 'm')
+  if (arne && son) console.log(String.fromCharCode(10) + 'arne (judge cost included) vs Sonnet medium, no mods: ' + (100 * (1 - arne / son)).toFixed(0) + '% per task (' + String.fromCharCode(36) + arne.toFixed(3) + ' vs ' + String.fromCharCode(36) + son.toFixed(3) + ')')
 }
 console.log(String.fromCharCode(10) + 'Failures:')
 for (const r of rows.filter(r => r.error || !r.ok)) console.log('- ' + r.tag + ': ' + (r.error || r.why))

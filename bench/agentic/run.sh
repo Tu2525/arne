@@ -21,7 +21,7 @@ trap 'rmdir "$B/lock"' EXIT
 BM="$(cygpath -m "$B" 2>/dev/null || echo "$B")"
 
 # The task repo is effortless's own source: the tasks and the scorer know its files.
-(cd "$EFFORTLESS" && tar --force-local -cf "$B/src.tar" --exclude=node_modules --exclude=.git .)
+(cd "$EFFORTLESS" && tar --force-local -cf "$B/src.tar" --exclude=node_modules --exclude=.git --exclude=.in_use .)
 [ -f "$B/pristine/hooks/register.tsx" ] || (cd "$B/pristine" && tar --force-local -xf ../src.tar)
 
 # arne under test: same code, but it may not touch the real decision log, and it must not see effortless as enabled.
@@ -29,6 +29,9 @@ rm -rf "$B/arne-plugin" && mkdir -p "$B/arne-plugin"
 cp -r "$ARNE/.claude-plugin" "$ARNE/hooks" "$ARNE/types" "$B/arne-plugin/"
 rm -f "$B/arne-plugin/hooks/"*.test.ts
 sed -i -E "s#^const LOG_FILE = '[^']*'#const LOG_FILE = '$BM/arne-decisions.jsonl'#; s#^const SETTINGS_FILE = '[^']*'#const SETTINGS_FILE = '$BM/no-settings.json'#" "$B/arne-plugin/hooks/register.tsx"
+# claude -p has no composer, so its prompts arrive as origin sdk; the bench copy treats those as typed, so the real /model runs (drive.mjs).
+sed -i "s#e.origin.kind === 'bridge'#e.origin.kind === 'bridge' || e.origin.kind === 'sdk'#" "$B/arne-plugin/hooks/register.tsx"
+grep -q "origin.kind === 'sdk'" "$B/arne-plugin/hooks/register.tsx" || { echo "arne sdk patch failed" >&2; exit 1; }
 grep -q "$BM/arne-decisions.jsonl" "$B/arne-plugin/hooks/register.tsx" || { echo "arne log path patch failed" >&2; exit 1; }
 grep -q "$BM/no-settings.json" "$B/arne-plugin/hooks/register.tsx" || { echo "arne settings path patch failed" >&2; exit 1; }
 
@@ -52,10 +55,10 @@ one() {
   esac
   (
     export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 EFFORTLESS_LOG="$B/r/$tag.proof.log"
-    cd "$dir" && timeout 900 claude -p "$P" --model "$MODEL" --effort medium "${PL[@]}" --setting-sources project \
-      --disable-slash-commands --strict-mcp-config --no-session-persistence \
-      --permission-mode acceptEdits --allowedTools "Read Edit Write Grep Glob Bash(node:*) Bash(ls:*) Bash(cat:*)" \
-      --output-format json < /dev/null > "$B/r/$tag.json" 2> "$B/r/$tag.err"
+    cd "$dir" && timeout 900 node "$ARNE/bench/agentic/drive.mjs" "$P" --model "$MODEL" --effort medium "${PL[@]}" --setting-sources project \
+      --strict-mcp-config --no-session-persistence \
+      --permission-mode acceptEdits --allowedTools "Read Edit Write Grep Glob Bash(node:*) Bash(ls:*) Bash(cat:*) PowerShell(node:*) PowerShell(ls:*) PowerShell(cat:*)" \
+      < /dev/null > "$B/r/$tag.json" 2> "$B/r/$tag.err"
   ) || echo "$tag failed"
   echo "$tag done"
 }
