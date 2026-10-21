@@ -737,18 +737,26 @@ function viewHead($: any, { Box, Button, Text }: any, title: string) {
   )
 }
 
+// A picked segment: the raised fill alone is faint (1.35:1 on the dark card), so a ✓ marks it too.
+const picked = (label: string, on: boolean) => (on ? `✓ ${label}` : label)
+const SETTINGS_LABEL_W = 16 // "Strongest model" is the longest label
+
 // The panel's Settings view: a label and a segmented control per row. A press shows the new value at
 // once, then writes it through $.config.set (setOption), so the panel and /config never disagree.
 function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: number, needsKey = false) {
+  // Every row is the same: the label in a fixed column, the options beside it. A row with many options
+  // wraps under its own first option, never to the far edge.
   const choice = (label: unknown, key: keyof Live, options: { value: unknown; label: string }[]) => {
     const set = (value: unknown) => setOption($, key, value)
     return (
-      <Box key={key} flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
-        <Text>{label}</Text>
-        <Box flexDirection="row" flexWrap="wrap" flexGrow={1} justifyContent="flex-end" columnGap={1} rowGap={1}>
+      <Box key={key} flexDirection="row" alignItems="flex-start" columnGap={2}>
+        <Box width={SETTINGS_LABEL_W} flexShrink={0}>
+          <Text>{label}</Text>
+        </Box>
+        <Box flexDirection="row" flexWrap="wrap" flexGrow={1} flexShrink={1} columnGap={1} rowGap={1}>
           {options.map(o =>
             o.value === live[key] ? (
-              <Button key={`${key}-${String(o.value)}`} variant="secondary" label={o.label} onPress={() => set(o.value)} />
+              <Button key={`${key}-${String(o.value)}`} variant="secondary" label={picked(o.label, true)} onPress={() => set(o.value)} />
             ) : (
               <Button key={`${key}-${String(o.value)}`} plain label={o.label} onPress={() => set(o.value)} />
             ),
@@ -761,15 +769,16 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
   const card = (title: string, rows: unknown[], note?: unknown) => (
     <Box key={`card-${title}`} flexDirection="column" flexGrow={1}>
       <Text size="footnote" dimColor>{title}</Text>
-      <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1} rowGap={gui ? 1 : 0}>
+      <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor={CARD.border} paddingX={1} rowGap={gui ? 1 : 0}>
         {rows as any}
       </Box>
       {note as any}
     </Box>
   )
   const MODELS = [{ value: 'haiku', label: 'Haiku' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
-  // Always the short effort names, so a row never wraps.
-  const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: EFFORT_LABEL_SHORT[v] ?? v }))
+  // The same names as the band: full from 72 columns, short below.
+  const effortNames = cols < 72 ? EFFORT_LABEL_SHORT : EFFORT_LABEL
+  const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: effortNames[v] ?? v }))
   return (
     <Box key="settings-view" flexDirection="column" gap={1}>
       {viewHead($, { Box, Button, Text }, 'Settings')}
@@ -783,18 +792,26 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
             { value: 'laya', label: 'Laya' },
             { value: 'jev', label: 'Jev' },
           ]),
-          choice(<Text>Subagents <Text size="footnote" dimColor>experimental</Text></Text>, 'subagents', [
+          choice('Subagents', 'subagents', [
             { value: 'auto', label: 'Auto' },
             { value: 'haiku', label: 'Haiku' },
             { value: 'sonnet', label: 'Sonnet' },
             { value: 'opus', label: 'Opus' },
             { value: 'off', label: 'Off' },
           ]),
-        ], needsKey && (
-          // No masked Input exists, so the key is never typed here: the button points to /config's secure field.
-          <Box key="jev-key" flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
-            <Text size="footnote" dimColor>Jev needs a TypeSafe key.</Text>
-            <Button key="add-key" plain label="Add key…" onPress={() => $.ui.toast(ADD_KEY_HINT)} />
+        ], (
+          // The judge's note sits under the card it describes. Jev's while it is the judge.
+          <Box key="routing-notes" flexDirection="column">
+            <Text size="footnote" dimColor>
+              {live.backend === 'jev' ? 'Jev is hosted: your prompts leave this machine.' : 'Laya runs on this machine and learns from your ratings.'}
+            </Text>
+            {needsKey && (
+              // No masked Input exists, so the key is never typed here: the button points to /config's secure field.
+              <Box key="jev-key" flexDirection="row" flexWrap="wrap" columnGap={2}>
+                <Text size="footnote" dimColor>Jev needs a TypeSafe key.</Text>
+                <Button key="add-key" plain label="Add key…" onPress={() => $.ui.toast(ADD_KEY_HINT)} />
+              </Box>
+            )}
           </Box>
         ))}
         {card('Limits', [
@@ -806,11 +823,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
         ])}
       </Box>
       <Box key="settings-notes" flexDirection="column">
-        {/* One note about the judges, so the view stays inside the band's height cap: Jev's while it is the judge. */}
-        <Text size="footnote" dimColor>
-          {live.backend === 'jev' ? 'Jev is hosted: your prompts leave this machine.' : 'Laya runs on this machine and learns from your ratings.'}
-        </Text>
-        <Text size="footnote" dimColor>Also in /config.</Text>
+        <Text size="footnote" dimColor>Subagents are experimental. Also in /config.</Text>
       </Box>
     </Box>
   )
@@ -828,13 +841,14 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
   // Bars as text, so they follow the theme: one accent for arne, dim for the baselines.
   const room = Math.max(10, Math.min(40, cols - 24))
   const max = Math.max(st.spent, st.opus, 1e-9)
-  const bar = (v: number) => '█'.repeat(Math.max(v > 0 ? 1 : 0, Math.round((v / max) * room)))
+  // ▆ not █: a full block touches the label's descenders above it.
+  const bar = (v: number) => '▆'.repeat(Math.max(v > 0 ? 1 : 0, Math.round((v / max) * room)))
   const tile = (name: string, base: number) => {
     const t = savedText(st.spent, base)
     return (
       <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1} flexGrow={1}>
         <Text size="footnote" dimColor>{`Against ${name}`}</Text>
-        <Text weight="semibold" tabular>{t.headline}</Text>
+        <Text size="title" weight="semibold" tabular>{t.headline}</Text>
         <Text size="footnote" dimColor tabular>{t.sub}</Text>
       </Box>
     )
@@ -846,7 +860,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {PERIODS.map(([p, label]) =>
             p === period ? (
-              <Button key={`period-${p}`} variant="secondary" label={label} onPress={() => update($, statsPeriod, () => p)} />
+              <Button key={`period-${p}`} variant="secondary" label={picked(label, true)} onPress={() => update($, statsPeriod, () => p)} />
             ) : (
               <Button key={`period-${p}`} plain label={label} onPress={() => update($, statsPeriod, () => p)} />
             ),
@@ -863,7 +877,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
           <Box flexDirection={cols < 60 ? 'column' : 'row'} gap={1}>
             {tile('Opus · medium', st.opus)}
           </Box>
-          <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1}>
+          <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1} rowGap={gui ? 1 : 0}>
             {([['With arne', st.spent], ['Opus · medium', st.opus]] as const).map(([label, v]) => (
               <Box key={`bar-${label}`} flexDirection="column">
                 <Box flexDirection="row" justifyContent="space-between">
@@ -882,7 +896,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
                   <Box flexGrow={1}>
                     <Text>{l.label}</Text>
                   </Box>
-                  <Text dimColor tabular>{l.label === 'Switches and summaries' ? String(l.count) : `${l.count} ${l.tokens === undefined ? 'turn' : 'call'}${l.count === 1 ? '' : 's'}`}</Text>
+                  <Text dimColor tabular>{l.label === 'Switches and summaries' ? `${l.count} ${l.count === 1 ? 'time' : 'times'}` : `${l.count} ${l.tokens === undefined ? 'turn' : 'call'}${l.count === 1 ? '' : 's'}`}</Text>
                   <Text tabular>{l.tokens === undefined ? usd(l.cost) : `${l.tokens.toLocaleString('en-US')} tokens`}</Text>
                 </Box>
               ))}
@@ -1430,7 +1444,7 @@ export const register: Register = (on, options) => {
               ? plainReason(l.reason)
               : ''
     // The cache in minutes only; the dot carries warm, cooling or cold.
-    const cacheText = c ? (left > 0 ? `${Math.ceil(left / 60_000)}m` : 'cold') : ''
+    const cacheText = c ? (left > 0 ? `cache ${Math.ceil(left / 60_000)}m` : 'cache cold') : ''
     const cool = left > 0 && left < 5 * 60_000
     const dotColor = left <= 0 ? undefined : cool ? 'warning' : 'success'
     // The resting line at this width: the head never shrinks, the reason fills the rest.
@@ -1443,7 +1457,7 @@ export const register: Register = (on, options) => {
     const segment = (key: string, options: { value: string; label: string }[], active: string, pick: (v: string) => void) =>
       options.map(o =>
         o.value === active ? (
-          <Button key={`${key}-${o.value}`} variant="secondary" label={o.label} onPress={() => pick(o.value)} />
+          <Button key={`${key}-${o.value}`} variant="secondary" label={picked(o.label, true)} onPress={() => pick(o.value)} />
         ) : (
           <Button key={`${key}-${o.value}`} plain label={o.label} onPress={() => pick(o.value)} />
         ),
@@ -1466,7 +1480,7 @@ export const register: Register = (on, options) => {
     // ways on from coldAdvice: stay, switch in this chat, or hand off to a fresh chat on that tier.
     const want = waiting ? tierOf(waiting) : undefined
     const doneTo = await read($, handedOff)
-    let costs: { key: string; label: string; now: string; each: string; note: string; tier?: Tier }[] = []
+    let costs: { key: string; label: string; now: string; each: string; note: string; best?: boolean; tier?: Tier }[] = []
     if (c && want && !pinned && !doneTo && left > 0 && PRICE[want] < PRICE[c.model] && planSwitch({ decided: want, chat: c.model, C: c.C, warmUntil: c.warmUntil, now }).why === 'sticky') {
       const rows = coldAdvice(c.C, c.model, c.warmUntil, now).rows
       const stay = rows.find(r => r.action === 'continue')!
@@ -1483,7 +1497,8 @@ export const register: Register = (on, options) => {
         label,
         now: usd(r.first),
         each: usd(r.after),
-        note: [payoff(r), r === best && 'recommended'].filter(Boolean).join(' · '),
+        note: payoff(r),
+        best: r === best,
         // Only the recommended handoff gets its button.
         tier: r === best ? tier : undefined,
       })
@@ -1520,7 +1535,7 @@ export const register: Register = (on, options) => {
             ? `${shortModel(waiting)} fits this task, but the cache is warm.`
             : `${modelWord}${effortWord ? ` at ${effortWord} effort` : ''}: ${plainReason(l.reason)}.`
     const whyNote = costs.length
-      ? `Switching in this chat re-reads all ${chatK} tokens. A new chat starts from a ${cap(live.compactModel)} summary.`
+      ? `Switching in this chat re-reads all ${chatK} tokens. A new chat starts from a ${cap(live.compactModel)} summary. To switch here, pick a Model below.`
       : waiting && c
         ? `Switching in this chat re-reads all ${chatK} tokens, so arne stays on ${modelWord} until the cache cools.`
         : [lastCost > 0 && `Last turn $${lastCost.toFixed(2)}`, subParts.length && `${subN} subagent${subN === 1 ? '' : 's'} routed: ${subParts.join(', ')}`].filter(Boolean).join(' · ')
@@ -1528,6 +1543,15 @@ export const register: Register = (on, options) => {
     // A handoff to the chat's own tier only starts a new chat: say that (5).
     const alertLabel = c && alertTier === c.model ? `New chat on ${name(alertTier)}` : `Handoff to ${name(alertTier)}`
     const handoffAlertButton = <Button key="handoff" plain label={alertLabel} onPress={(p: any) => handoff($, alertTier, p?.surface)} />
+    // A row's note: when it pays off, dim; the recommended row says so in the accent, semibold, so it is not missed.
+    const costNote = (r: { note: string; best?: boolean }) =>
+      r.note === '' && !r.best ? undefined : (
+        <Text size="footnote" dimColor>
+          {r.note}
+          {r.note !== '' && r.best ? ' · ' : ''}
+          {r.best && <Text size="footnote" weight="semibold" color="claude">Recommended</Text>}
+        </Text>
+      )
     // The costs table's columns: a fixed width each, so the numbers line up.
     const W = { label: narrow ? 18 : 20, now: 7, each: 12, end: 12 }
     return (
@@ -1602,7 +1626,7 @@ export const register: Register = (on, options) => {
               <Text color="claude">◆</Text>
               <Text weight="semibold">arne</Text>
               <Text dimColor>off</Text>
-              <Button key="auto" plain label="Turn on" onPress={() => toggleAuto($)} />
+              <Button key="auto" plain label="Turn arne on" onPress={() => toggleAuto($)} />
             </Box>
           ) : (
             <Box flexDirection="column">
@@ -1651,7 +1675,8 @@ export const register: Register = (on, options) => {
                     <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
                       <Text>{why}</Text>
                       {l && !pinned && thankedKey !== l.key && (
-                        <Box flexDirection="row" flexShrink={0} gap={1}>
+                        <Box flexDirection="row" flexShrink={0} alignItems="center" gap={1}>
+                          <Text size="footnote" dimColor>Right pick?</Text>
                           <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
                           <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
                         </Box>
@@ -1679,11 +1704,11 @@ export const register: Register = (on, options) => {
                               <Text tabular dimColor={r.key === 'head'} weight={r.key === 'head' ? undefined : 'semibold'}>{r.now}</Text>
                             </Box>
                             <Box width={W.each} flexShrink={0}>
-                              <Text tabular dimColor>{r.each}</Text>
+                              <Text tabular dimColor={r.key === 'head'}>{r.each}</Text>
                             </Box>
                             {!narrow && (
                               <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                                {r.note !== '' && <Text size="footnote" dimColor>{r.note}</Text>}
+                                {costNote(r)}
                               </Box>
                             )}
                             <Box width={W.end} flexShrink={0} justifyContent="flex-end">
@@ -1691,7 +1716,7 @@ export const register: Register = (on, options) => {
                             </Box>
                           </Box>
                           {/* Narrow, the note goes under its row. */}
-                          {narrow && r.note !== '' && <Text size="footnote" dimColor>{r.note}</Text>}
+                          {narrow && costNote(r)}
                         </Box>
                       ))}
                     </Box>
@@ -1740,7 +1765,7 @@ export const register: Register = (on, options) => {
                           <Button key={`handoff-${TIER_NAME_OF[t]}`} plain label={`to ${name(t)}`} onPress={(p: any) => handoff($, t, p?.surface)} />
                         ))}
                     </Box>
-                    <Button key="auto" plain label="Turn off" onPress={() => toggleAuto($)} />
+                    <Button key="auto" plain label="Turn arne off" onPress={() => toggleAuto($)} />
                   </Box>
                 </Box>
               )}
