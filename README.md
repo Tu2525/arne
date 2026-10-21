@@ -7,7 +7,7 @@
 In its bench, arne cost **53% less per task** than running everything on Opus, and 35% less than effortless.
 
 
-https://github.com/user-attachments/assets/a75731ef-c7fc-4ffa-84b9-589613a9dd22
+https://github.com/user-attachments/assets/20300835-8253-4130-91c0-946e7c5370c5
 
 
 ## What it does
