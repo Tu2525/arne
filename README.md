@@ -91,6 +91,8 @@ Plugins can't move the desktop app's model menu. arne switches with the real `/m
 
 ## Bench
 
+**Latest results: [bench/agentic/FINDINGS.md](bench/agentic/FINDINGS.md).** It covers 5 reps per task, a 5-prompt chat test, pinned and effortless setups, the method, every test prompt and how it's checked, and how to send us your own numbers. Short version: arne cost $0.047 per task against $0.228 on Opus, and $0.021 per chat against $0.599, at about the same pass rate. The first run, below, is kept for history.
+
 These are effortless's own `bench/agentic` tasks (MIT): four real coding tasks on effortless's source. They find a threshold, add JSDoc without touching code, write and run a test-counting script, and explain an update flow. Every run started on Opus · medium. There were three setups, with 2 runs per task each, through `claude -p --setting-sources project`, which keeps user plugins out.
 
 | Setup | Runs | Correct | Correct, harness denials excluded | API-equivalent cost | Per task | Avg requests | Avg time |

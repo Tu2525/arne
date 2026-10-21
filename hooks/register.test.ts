@@ -234,7 +234,7 @@ test('a step with no usage keeps the cache size, and the footer gets no status w
     // drain
   }
   const band = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
-  expect(await band.find({ type: 'Text', text: /^\d+m$/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^cache \d+m$/ })).toBeDefined()
   // The footer already shows the model and effort; arne adds nothing there while it runs.
   expect(s.statuses.filter(x => x.includes('·'))).toEqual([])
 })
@@ -283,7 +283,7 @@ test('on the desktop the resting line is styled Text and the chevron alone is th
   }
   const band = await $.ui.mount({ plugin: 'arne', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 24 } })
   expect(await band.find({ type: 'Text', text: 'arne' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: /^\d+m$/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^cache \d+m$/ })).toBeDefined()
   expect(await band.find({ type: 'Button', text: /arne/ })).toBeUndefined()
   await band.press({ key: 'band' })
   for (let i = 0; i < 2; i++) await clock.settle()
@@ -332,7 +332,7 @@ test('a sticky cheaper pick shows stay, switch and handoff with their costs; one
   expect(await band.find({ type: 'Text', text: 'New chat on Sonnet' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /pays off in \d+ turn/ })).toBeDefined()
   expect(await band.find({ type: 'Text', text: 'Sonnet fits this task, but the cache is warm.' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: /^Switching in this chat re-reads all 150k tokens\. A new chat starts from a Haiku summary\.$/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^Switching in this chat re-reads all 150k tokens\. A new chat starts from a Haiku summary\. To switch here, pick a Model below\.$/ })).toBeDefined()
   await Promise.all([band.press({ key: 'handoff-row' }).catch(() => undefined), band.press({ key: 'handoff-row' }).catch(() => undefined)])
   for (let i = 0; i < 3; i++) await clock.settle()
   expect(s.ran.filter(r => r.startsWith('/clear')).length).toBe(0)
@@ -498,10 +498,10 @@ test('the band countdown ticks without a session start, as after a reload (17u)'
   }
   const band = await $.ui.mount(band80)
   await $.command.run({ command: 'arne', args: 'backend heuristic' })
-  const before = (await band.find({ type: 'Text', text: /^\d+m$/ })).text
+  const before = (await band.find({ type: 'Text', text: /^cache \d+m$/ })).text
   await clock.advance(2 * 60_000) // inside the 5m TTL: still warm, two minutes fewer
   for (let i = 0; i < 3; i++) await clock.settle()
-  const after = (await band.find({ type: 'Text', text: /^\d+m$/ })).text
+  const after = (await band.find({ type: 'Text', text: /^cache \d+m$/ })).text
   expect(after).not.toBe(before)
 })
 
@@ -840,7 +840,7 @@ test('the costs table holds the one Hand off, on the recommended row; no Laya li
   await band.press({ key: 'band' })
   expect(await band.findAll({ type: 'Button', text: 'Hand off' })).toHaveLength(1)
   expect(await band.find({ type: 'Button', text: 'Handoff…' }).catch(() => undefined)).toBeUndefined()
-  expect(await band.find({ type: 'Text', text: /pays off in \d+ turns? · recommended/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /pays off in \d+ turns? · Recommended/ })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /Ratings train Laya/ }).catch(() => undefined)).toBeUndefined()
   expect(await band.find({ type: 'Button', text: 'Good call' })).toBeDefined()
 
@@ -933,7 +933,7 @@ test('Subagents reads its ceiling in Settings, not in the panel; no Esc hint, si
   expect(await band.find({ type: 'Text', text: /Esc/ }).catch(() => undefined)).toBeUndefined()
   expect(await band.find({ key: 'subs-on' }).catch(() => undefined)).toBeUndefined()
   await band.press({ key: 'gear' })
-  expect((await band.find({ key: 'subagents-off' })).props.label).toBe('Off')
+  expect((await band.find({ key: 'subagents-off' })).props.label).toBe('✓ Off') // the picked segment carries a ✓
   expect((await band.find({ key: 'subagents-sonnet' })).props.label).toBe('Sonnet')
 })
 
@@ -974,7 +974,7 @@ test('an alert puts dismiss first and its primary last, with the price it spends
   expect(await band.find({ type: 'Text', text: 'Your message is waiting' })).toBeDefined()
 })
 
-test('Settings starts with ‹ Back, then its title; the Judge row offers Jev; Limits uses the short effort names', async ($: any, on: any) => {
+test('Settings starts with ‹ Back, then its title; the Judge row offers Jev; Limits uses the same effort names as the band', async ($: any, on: any) => {
   engine(on, 'claude-sonnet-5-5')
   const band = await $.ui.mount(band100)
   await $.command.run({ command: 'arne', args: 'settings' })
@@ -986,8 +986,8 @@ test('Settings starts with ‹ Back, then its title; the Judge row offers Jev; L
   expect(await band.find({ type: 'Text', text: 'Settings' })).toBeDefined()
   expect((await band.find({ key: 'backend-jev' })).props.label).toBe('Jev')
   expect(await band.find({ type: 'Text', text: 'Limits' })).toBeDefined()
-  expect(await band.find({ key: 'effortCeiling-medium' })).toMatchObject({ props: { label: 'Med' } })
-  expect(await band.find({ type: 'Text', text: 'Also in /config.' })).toBeDefined()
+  expect(await band.find({ key: 'effortCeiling-medium' })).toMatchObject({ props: { label: 'Medium' } })
+  expect(await band.find({ type: 'Text', text: /Also in \/config\./ })).toBeDefined()
 })
 
 // The kit draws no paint, so a view's height is counted from its tree, as the terminal lays it out: a Text
@@ -1016,12 +1016,11 @@ test('Settings fits the band: side by side from 90 columns in at most 12 rows, s
   const notes = (await wide.findAll({ type: 'Text' })).filter((x: any) => x.props.size === 'footnote')
   expect(notes.length).toBeGreaterThan(0)
   for (const note of notes) expect(note.text.length).toBeLessThanOrEqual(96)
-  // A choice row fits a half-width card's 45 columns (100 less the gap, halved, less border and padding): its label,
-  // the column gap, each segment's label and a gap, and two for the picked segment's padding.
+  // Every choice row has its label in the same fixed column, so the options line up and a long row wraps under its own options.
   for (const key of ['auto', 'backend', 'subagents', 'modelFloor', 'modelCeiling', 'effortFloor', 'effortCeiling']) {
-    const row = (await wide.findAll({ type: 'Button' })).filter((b: any) => b.key?.startsWith(`${key}-`))
-    const label = { auto: 'Auto routing', backend: 'Judge', subagents: 'Subagents', modelFloor: 'Cheapest model', modelCeiling: 'Strongest model', effortFloor: 'Lowest effort', effortCeiling: 'Highest effort' }[key]!
-    expect(label.length + 2 + row.reduce((w: number, b: any) => w + b.props.label.length + 1, 0) + 2).toBeLessThanOrEqual(45)
+    const row = await wide.find({ type: 'Box', key })
+    expect(row.children[0].props.width).toBe(16)
+    expect(row.children[0].children[0].children[0].length).toBeLessThanOrEqual(16)
   }
   await wide.unmount()
   const narrow = await $.ui.mount({ ...band100, props: { bodyColumns: 50 }, viewport: { columns: 50, rows: 40 } })
@@ -1047,7 +1046,7 @@ test('the panel: the why sentence, then one footnote with the last turn\'s cost;
   expect(await band.find({ type: 'Text', text: /^Last turn \$\d+\.\d\d$/ })).toBeDefined()
   const footer = (await band.find({ key: 'footer' })).children
   expect(footer[0].children.map((b: any) => b.props.label)).toEqual(['Settings', 'Stats', 'Handoff…'])
-  expect(footer[1].props.label).toBe('Turn off')
+  expect(footer[1].props.label).toBe('Turn arne off')
 })
 
 test('subagents are left alone until the user turns routing on (experimental, off by default)', async ($: any, on: any) => {
