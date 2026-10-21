@@ -99,13 +99,13 @@ ARNE_MULTI_DIR=D:/arne-bench/multi node bench/agentic/score-multi.cjs
 5. **Longer chats.** Five prompts rarely grow context enough to test cache-aware switching or compaction. Add a 15–20 prompt chat.
 6. **Check the odd failure.** `ab3-opus-t3-m-2` failed with a correct script; find out why before the next run.
 
-## Found a problem? Open an issue
+## Send us your data: open an issue
 
-If a result looks wrong, a task is unfair, or the bench will not run for you, open an issue at https://github.com/Tu2525/arne/issues with:
+These results come from one machine, one repo and a few runs. More data is what makes them trustworthy, so if you run the bench or use arne day to day, please share your numbers in an issue at https://github.com/Tu2525/arne/issues/new?template=bench-results.md. Any of these helps:
 
-- **What you ran**: the command, `CONDS`, reps, and your OS.
-- **What happened**: the score table or error, and the `r/<tag>.json` / `.err` of a bad run if you have it.
-- **What you expected**, and why.
-- **Versions**: arne's commit, effortless's version, Claude Code's version.
+- **Bench results.** Run either bench (see *Rerunning the bench*) and paste the score table, plus `scored.json` (multi-prompt) or the `r/` folder zipped.
+- **Real usage.** Run `/arne stats` after a week or more of normal work and paste what it prints: what you spent, and what the same turns would have cost on Opus.
+- **Where it went wrong.** A prompt arne sent to a model that was too small (or too big), with the model it picked and what you expected. `/arne why` shows the reason for the last pick.
+- **New tasks.** A prompt, and how to check the answer by script.
 
-New task ideas are welcome too: give the prompt and how to check the answer by script.
+Please include your OS, arne's commit, effortless's version, Claude Code's version, and your plan (Pro, Max, API). Leave out anything private: prompts and paths from your own projects are not needed.
