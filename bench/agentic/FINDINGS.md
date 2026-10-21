@@ -69,3 +69,43 @@ Any change to a file the task did not ask for fails the run.
 - 3 chats per multi-prompt setup and 5 reps per single-prompt task: the intervals are wide.
 - The "Sonnet or Opus only" setup never chose Opus, so it measures Sonnet with arne loaded, not switching. Its misses (JSDoc twice, the count twice) are more than Sonnet with no mods got; with 3 chats, that may be noise.
 - One single-prompt Opus run (`ab3-opus-t3-m-2`) is marked failed though its script printed 198; not yet checked.
+
+## Rerunning the bench
+
+You need Claude Code logged in, Node 22+, bash (Git Bash on Windows), and effortless installed, since its source is the task repo (`EFFORTLESS_DIR` points elsewhere). Each run uses about 20 MB of workspace; put it on a disk with room.
+
+```bash
+# Single-prompt bench: 4 tasks × REPS, on one model. Setups: m (no mods), on (effortless), arne.
+bash bench/agentic/run.sh 5
+node bench/agentic/score.cjs
+
+# Multi-prompt bench: one 5-prompt chat per run, REPS chats per setup.
+ARNE_MULTI_DIR=D:/arne-bench/multi bash bench/agentic/multi.sh 3
+ARNE_MULTI_DIR=D:/arne-bench/multi node bench/agentic/score-multi.cjs
+```
+
+- `CONDS` picks setups, e.g. `CONDS="arne arnehaiku"`. Multi-prompt setups: `opus`, `sonnet`, `arne`, `arnesonnet`, `arneopus`, `arnehaiku`, `arnefloor`, `effopus`, `effsonnet`.
+- Finished runs are cached by result file; delete `r/<tag>.json` to rerun one.
+- One run at a time per folder (a `lock` folder guards it). Do not edit `multi.sh` while it runs: bash reads the script as it goes.
+- The scorer reads the folder from `ARNE_MULTI_DIR`, not from an argument.
+- When effortless or arne changes, rerun everything: cached results from an older version are not comparable.
+
+## How to improve the bench
+
+1. **Fix the count task.** Say whether regex `.test(` calls count, or accept 198 and 199. Today it fails right answers.
+2. **Add tasks Haiku fails.** Every task here is easy enough for Haiku, so routing is never tested. Add multi-file refactors, bugs that need reading several files, or tasks with a hidden test to pass.
+3. **More reps.** 3 chats per setup cannot separate 13/15 from 15/15. Aim for 10 or more before calling a gap real.
+4. **More than one repo.** All tasks use effortless's source. Add a second codebase so the results do not lean on one project.
+5. **Longer chats.** Five prompts rarely grow context enough to test cache-aware switching or compaction. Add a 15–20 prompt chat.
+6. **Check the odd failure.** `ab3-opus-t3-m-2` failed with a correct script; find out why before the next run.
+
+## Found a problem? Open an issue
+
+If a result looks wrong, a task is unfair, or the bench will not run for you, open an issue at https://github.com/Tu2525/arne/issues with:
+
+- **What you ran**: the command, `CONDS`, reps, and your OS.
+- **What happened**: the score table or error, and the `r/<tag>.json` / `.err` of a bad run if you have it.
+- **What you expected**, and why.
+- **Versions**: arne's commit, effortless's version, Claude Code's version.
+
+New task ideas are welcome too: give the prompt and how to check the answer by script.
