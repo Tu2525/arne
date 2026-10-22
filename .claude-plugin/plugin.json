@@ -1,6 +1,6 @@
 {
   "name": "arne",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Routes each prompt and subagent run to the cheapest model and effort that can handle it, and manages the cache, compaction and model switches around it.",
   "license": "MIT",
   "types": "./types/index.d.ts",
