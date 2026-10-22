@@ -21,6 +21,9 @@ p.stdout.on('data', (d) => {
     try { j = JSON.parse(line) } catch { continue }
     if (pinning && j.type === 'result') { pinning = false; send(prompts[0]); continue }
     // A dropped prompt and a /model end in results of their own, with no model usage: not an answer.
+    // Once the session has used a model their modelUsage is the running total, so the text is checked too:
+    // arne's switch drops the prompt, then sends it again.
+    if (j.type === 'result' && typeof j.result === 'string' && j.result.startsWith('Prompt dropped by a hook')) continue
     if (j.type !== 'result' || !Object.keys(j.modelUsage ?? {}).length) continue
     results.push(j)
     if (results.length < prompts.length) send(prompts[results.length])
