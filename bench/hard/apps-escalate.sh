@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Failure escalation on an APPS task Haiku fails and Sonnet passes. Two prompts: write the solution, then "that did not work".
-# Usage: ARNE_SRC=path/to/arne TASKS=D:/.../apps-tasks TASK=apps-2140 OUT=... bash bench/hard/apps-escalate.sh [reps]
+# Usage: [FAILS=n] ARNE_SRC=path/to/arne TASKS=D:/.../apps-tasks TASK=apps-2140 OUT=... bash bench/hard/apps-escalate.sh [reps]
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; BENCH="$HERE/../agentic"
 ARNE_SRC="${ARNE_SRC:?}"; TASKS="${TASKS:?}"; TASK="${TASK:-apps-2140}"; REPS="${1:-3}"
@@ -13,10 +13,8 @@ mk() {
   grep -q "origin.kind === .sdk." "$1/hooks/register.tsx" || { echo "patch failed for $1" >&2; exit 1; }
 }
 mk "$OUT/arnesw"
-cat > "$OUT/prompts.json" <<'JSON'
-["Read problem.md. Write solution.mjs, a Node.js program that reads the input from stdin and prints the answer to stdout. Test it against the examples in the problem by running it with node before you finish.",
- "That did not work, the solution is wrong on some of the tests. Fix it."]
-JSON
+# FAILS "that did not work" prompts follow the first (default 1); arne should retry 3 times on one model, then go up.
+node -e 'const n=+process.argv[1];console.log(JSON.stringify(["Read problem.md. Write solution.mjs, a Node.js program that reads the input from stdin and prints the answer to stdout. Test it against the examples in the problem by running it with node before you finish.",...Array.from({length:n},(_,i)=>i?"Still wrong on some of the tests. Fix it.":"That did not work, the solution is wrong on some of the tests. Fix it.")]))' "${FAILS:-1}" > "$OUT/prompts.json"
 for rep in $(seq 1 "$REPS"); do for c in ${CONDS:-haiku sonnet arnesw}; do
   tag="ae-$c-$rep"; d="$OUT/w/$tag"; [ -s "$OUT/r/$tag.json" ] && { echo "$tag cached"; continue; }
   rm -rf "$d"; mkdir -p "$d"; cp "$TASKS/$TASK/problem.md" "$d/"
