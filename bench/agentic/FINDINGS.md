@@ -92,10 +92,31 @@ ARNE_MULTI_DIR=D:/arne-bench/multi node bench/agentic/score-multi.cjs
 - The scorer reads the folder from `ARNE_MULTI_DIR`, not from an argument.
 - When effortless or arne changes, rerun everything: cached results from an older version are not comparable.
 
+## Failure escalation (one APPS task, 3 chats per setup)
+
+Task `apps-2140` from APPS: write `solution.mjs`, then the person says "that did not work". Hidden tests score the final file. Haiku fails it every time and Sonnet passes it every time, so it tests whether a failure should buy a stronger model. Runner: `bench/hard/apps-escalate.sh` (`FAILS=n` sends n failure prompts).
+
+| Setup | Passes | Avg cost per chat |
+|---|---|---|
+| Haiku alone | 0/3 | $0.026 |
+| Sonnet alone | 3/3 | $0.179 |
+| arne, nothing above Sonnet | 3/3 | $0.136 |
+| arne, judge may pick Opus, failure moves up (old) | 2/3 | $0.331 |
+| arne, failure hands the retry to a stronger subagent | 3/3 | $0.467 |
+| arne 0.4: judge stops at Sonnet, one failure moves up | 3/3 | $0.295 |
+| arne 0.4, 3 failed retries before moving up, 5 failure prompts | 0/3 | $0.540 |
+
+- **The judge sent this task to Sonnet every time.** So Haiku to Sonnet was never exercised in a run, only in a unit test. A fair test needs a task the judge sends to Haiku and Haiku fails.
+- **Letting the judge pick Opus cost more and passed less.** Capping it at Sonnet and leaving Opus to a failed attempt kept 3/3 at about 11% below the old setup.
+- **The subagent route was the dearest** and is left out of arne 0.4 (the diff is kept as a patch).
+- **The last row is a test flaw, not an escalation flaw.** Sonnet's first answer already passed, then it was told five times it was wrong and rewrote it into a broken one (3/10). Chains were as designed: Sonnet for three failed attempts, Opus after. Failure prompts should only be sent when the answer really is wrong.
+- **Default:** one failed attempt before moving up (`attempts` setting, raise it to retry more on the same model).
+- 3 chats per setup is too few to call the cost gaps real.
+
 ## How to improve the bench
 
 1. **Fix the count task.** Say whether regex `.test(` calls count, or accept 198 and 199. Today it fails right answers.
-2. **Add tasks Haiku fails.** Every task here is easy enough for Haiku, so routing is never tested. Add multi-file refactors, bugs that need reading several files, or tasks with a hidden test to pass.
+2. **Add tasks Haiku fails.** Every task here is easy enough for Haiku, so routing is never tested (`apps-2140` fails on Haiku, but the judge still starts it on Sonnet). Add multi-file refactors, bugs that need reading several files, or tasks with a hidden test to pass.
 3. **More reps.** 3 chats per setup cannot separate 13/15 from 15/15. Aim for 10 or more before calling a gap real.
 4. **More than one repo.** All tasks use effortless's source. Add a second codebase so the results do not lean on one project.
 5. **Longer chats.** Five prompts rarely grow context enough to test cache-aware switching or compaction. Add a 15–20 prompt chat.
