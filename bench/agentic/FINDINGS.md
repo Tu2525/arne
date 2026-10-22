@@ -37,6 +37,8 @@ Any change to a file the task did not ask for fails the run.
 | Sonnet medium, no mods | 15/15 | 3/3 | $0.267 | $0.053 | Sonnet |
 | effortless on Opus | 15/15 | 3/3 | $0.524 | $0.105 | Opus |
 | effortless on Sonnet | 7/15 | 0/3 | $0.274 | $0.118 | Sonnet |
+| effort-router on Opus | 15/15 | 3/3 | $0.616 | $0.123 | Opus |
+| effort-router on Sonnet | 12/15 | 2/3 | $0.332 | $0.083 | Sonnet |
 | **arne, unpinned (starts on Opus)** | 13/15 | 2/3 | **$0.021** | **$0.005** | Haiku on every prompt |
 | arne pinned Haiku | 15/15 | 3/3 | $0.017 | $0.003 | Haiku |
 | arne pinned Sonnet | 14/15 | 2/3 | $0.261 | $0.056 | Sonnet |
