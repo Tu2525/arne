@@ -42,10 +42,10 @@ fs.writeFileSync(path.join(B, 'scored.json'), JSON.stringify(rows, null, 1))
 
 const good = rows.filter(r => !r.error)
 const sum = (a, k) => a.reduce((t, r) => t + (r[k] || 0), 0)
-const label = { opus: 'Opus medium, no mods', sonnet: 'Sonnet medium, no mods', arne: 'arne (starts on Opus)', arnesonnet: 'arne pinned Sonnet', arneopus: 'arne pinned Opus', arnehaiku: 'arne pinned Haiku', arnefloor: 'arne, Sonnet or Opus only', effopus: 'effortless on Opus', effsonnet: 'effortless on Sonnet' }
+const label = { opus: 'Opus medium, no mods', sonnet: 'Sonnet medium, no mods', arne: 'arne (starts on Opus)', arnesonnet: 'arne pinned Sonnet', arneopus: 'arne pinned Opus', arnehaiku: 'arne pinned Haiku', arnefloor: 'arne, Sonnet or Opus only', effopus: 'effortless on Opus', effsonnet: 'effortless on Sonnet', eropus: 'effort-router on Opus', ersonnet: 'effort-router on Sonnet' }
 console.log('| Setup | Chats | Prompts right | Chats fully right | Avg cost per chat | Cost per right prompt | Avg time |')
 console.log('| --- | --- | --- | --- | --- | --- | --- |')
-for (const c of ['opus', 'sonnet', 'arne', 'arnesonnet', 'arneopus', 'arnehaiku', 'arnefloor', 'effopus', 'effsonnet']) {
+for (const c of ['opus', 'sonnet', 'arne', 'arnesonnet', 'arneopus', 'arnehaiku', 'arnefloor', 'effopus', 'effsonnet', 'eropus', 'ersonnet']) {
   const a = good.filter(r => r.cond === c)
   if (!a.length) continue
   const right = a.reduce((t, r) => t + r.ok.filter(Boolean).length, 0), all = a.length * 5

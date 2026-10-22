@@ -41,7 +41,9 @@ one() {
   case $cond in opus) model=opus;; sonnet) model=sonnet;; arne) model=opus; flags=(--plugin-dir "$B/arne-plugin");;
     arnesonnet) model=opus; pin=sonnet; flags=(--plugin-dir "$B/arne-plugin");; arneopus) model=opus; pin=opus; flags=(--plugin-dir "$B/arne-plugin");;
     arnehaiku) model=opus; pin=haiku; flags=(--plugin-dir "$B/arne-plugin");; arnefloor) model=opus; flags=(--plugin-dir "$B/arne-floor");;
-    effopus) model=opus; flags=(--plugin-dir "$EFFORTLESS");; effsonnet) model=sonnet; flags=(--plugin-dir "$EFFORTLESS");; esac
+    effopus) model=opus; flags=(--plugin-dir "$EFFORTLESS");; effsonnet) model=sonnet; flags=(--plugin-dir "$EFFORTLESS");;
+    # Rivals, from a checkout in RIVALS_DIR (git clone https://github.com/cfitzgerald-pd/effort-router).
+    eropus) model=opus; flags=(--plugin-dir "$RIVALS_DIR/effort-router");; ersonnet) model=sonnet; flags=(--plugin-dir "$RIVALS_DIR/effort-router");; esac
   ( cd "$dir" && ARNE_PIN=$pin timeout 1800 node "$ARNE/bench/agentic/drive-multi.mjs" "$BM/prompts.json" --model "$model" --effort medium "${flags[@]}" --setting-sources project \
       --strict-mcp-config --no-session-persistence --permission-mode acceptEdits \
       --allowedTools "Read Edit Write Grep Glob Bash(node:*) Bash(ls:*) Bash(cat:*) PowerShell(node:*) PowerShell(ls:*) PowerShell(cat:*)" \
