@@ -5,7 +5,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MODEL="${MODEL:-haiku}"; REPS="${1:-3}"; shift || true
-TASKS=("$@"); [ ${#TASKS[@]} -gt 0 ] || TASKS=(dates csv money semver lru)
+TASKS=("$@"); [ ${#TASKS[@]} -gt 0 ] || TASKS=(dates)
 OUT="${HARD_OUT:-${TEMP:-/tmp}/arnehard}"; mkdir -p "$OUT"
 for t in "${TASKS[@]}"; do for r in $(seq 1 "$REPS"); do
   d="$OUT/w/$MODEL-$t-$r"; rm -rf "$d"; mkdir -p "$d"; cp "$HERE/$t/"* "$d/"
