@@ -4,7 +4,8 @@ import type { Register } from 'claude-code'
 import { JEV_MODEL, JEV_URL, LAYA_URL, parseVerdict, SYSTEM, SYSTEM_ONE_TIMEOUT_MS, systemOneBody, systemOneVerdict } from './backends'
 import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, overTurns, paysOffAfter, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, OUT, READ } from './econ'
 import type { BandState, Row as CostRow } from './econ'
-import { MODEL, route } from './route'
+import { MODEL, failedAttempt, route } from './route'
+import { VERSION } from './version'
 import type { Backend, Decision, Tier } from './route'
 import { parseUsage, periodStart, PERIODS, savedText, summarize, usageRow } from './stats'
 import type { Period, UsageRow } from './stats'
@@ -258,6 +259,12 @@ async function sendAnyway($: any) {
 
 // Module state. Reset on a reload, like every module variable (what must survive one is in atoms, 17u).
 let prev: Decision | undefined
+// After an escalation, the next HOLD_TURNS prompts stay at least on its tier, so a judge that read the retry
+// as small does not drop straight back to the model that failed (claude-router holds 2 turns too).
+const HOLD_TURNS = 2
+let hold: { tier: Tier; left: number } | undefined
+let failures = 0 // failed attempts reported at the current tier; the person's retry is not a new tier until live.attempts of them
+const RANK: Record<Tier, number> = { S: 0, M: 1, L: 2 }
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
 let arneSwitched = false // arne's own /model ran: the next main turn's cache writes are the switch's (17q)
@@ -293,6 +300,7 @@ type Live = {
   effortCeiling: string
   compactModel: string
   coldTokens: number
+  attempts: number // failed attempts at a tier before a retry goes one up
   heavyTokens: number
   continueAfterCompact: boolean
   subagents: string // 17y: the dearest model a subagent may run on (haiku, sonnet, opus), or off
@@ -302,14 +310,15 @@ const DEFAULTS: Live = {
   auto: true,
   backend: 'haiku',
   modelFloor: 'haiku',
-  modelCeiling: 'opus',
+  modelCeiling: 'sonnet', // the judge stops here; only a failed attempt goes on to Opus
   effortFloor: 'low',
   effortCeiling: 'high',
   compactModel: 'haiku',
   coldTokens: 30_000,
+  attempts: 1, // measured: 3 retries in a row talked a passing Sonnet answer into failing (0/3 vs 3/3)
   heavyTokens: 150_000,
   continueAfterCompact: true,
-  subagents: 'off', // experimental: routing a subagent is opt-in
+  subagents: 'sonnet', // a subagent runs on Sonnet at most
   handoff: 'newchat',
 }
 // 17y: Subagents was On/Off before it became a ceiling; On reads as Sonnet, Off as off. Auto is no ceiling (Opus).
@@ -377,6 +386,9 @@ async function ownSet($: any, key: string, value: unknown): Promise<{ value: unk
   const mine = named.filter(row => JSON.stringify([row.key, row.provider ?? null]).includes('arne'))
   if (mine.length > 1) return { deny: 'two copies of arne are enabled; turn one off in /plugin' }
   if (mine.length) return mine[0]!.key !== key ? setOnce($, mine[0]!.key, value) : r
+  // The engine lists no row for this option at all: nothing can persist it, but the surfaces already hold
+  // the value, so it applies for this session instead of rolling back with an error.
+  if (!named.length) return { value }
   // Name the rows it saw, so a toast says what the engine calls this option.
   return { deny: `${r.deny.replace(/\)$/, '')}; rows ending .${field}: ${named.map(row => row.key).join(', ') || 'none'})` }
 }
@@ -626,9 +638,21 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
     d = { tier: pin.tier ?? tierOf(await $.session.model()) ?? 'M', effort, reason: 'pinned', source: 'pin', keepEffort: !pin.effort }
   } else {
     const card = await taskCard($, c)
-    const r = await route(text, { prev, paused: await read($, isPaused), backends: backendsOf($, s.backend, card) })
+    const api: any = await $.session.messages({ as: 'api' }).catch(() => [])
+    const failed = failedAttempt(Array.isArray(api) ? api : [], text)
+    failures = failed ? failures + 1 : 0
+    // A failure under the limit retries on the same model; the one that reaches it goes up.
+    const retry = failed && prev && failures < live.attempts
+    let r = retry
+      ? ({ ...prev, reason: `attempt ${failures + 1} of ${live.attempts} at this tier`, source: 'prev' } as Decision)
+      : await route(text, { prev, failed, paused: await read($, isPaused), backends: backendsOf($, s.backend, card) })
     if (!r) return undefined
-    d = { ...r, tier: clampTier(r.tier, live.modelFloor, live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
+    if (r.source === 'escalate') {
+      hold = { tier: r.tier, left: HOLD_TURNS }
+      failures = 0
+    }
+    else if (hold && hold.left-- > 0 && RANK[r.tier] < RANK[hold.tier]) r = { ...r, tier: hold.tier, reason: `${r.reason}; held after a failure` }
+    d = { ...r, tier: clampTier(r.tier, live.modelFloor, r.source === 'escalate' ? 'L' : live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
   }
   // Never route to a model whose window is smaller than the chat: a bigger tier takes the prompt instead.
   // This is the one thing that moves a pin, and the band then says why ("the chat needs a bigger window").
@@ -643,7 +667,8 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
 async function switchTarget($: any, d: Decision): Promise<string | undefined> {
   const chat = tierOf(await $.session.model())
   if (!chat || d.tier === chat) return undefined
-  if (d.source === 'pin') return MODEL[d.tier]
+  // An escalation moves even on a warm cache: a cold write costs less than failing again.
+  if (d.source === 'pin' || d.source === 'escalate') return MODEL[d.tier]
   const c: Cache | null = await read($, cache)
   const plan = planSwitch({ decided: d.tier, chat, C: c?.C ?? 0, warmUntil: c?.warmUntil ?? {}, now: await $.clock.now() })
   return plan.why === 'sticky' ? undefined : MODEL[d.tier]
@@ -823,7 +848,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
         ])}
       </Box>
       <Box key="settings-notes" flexDirection="column">
-        <Text size="footnote" dimColor>Subagents are experimental. Also in /config.</Text>
+        <Text size="footnote" dimColor>{`arne ${VERSION}. Subagents are experimental. Also in /config.`}</Text>
       </Box>
     </Box>
   )
@@ -1240,7 +1265,7 @@ export const register: Register = (on, options) => {
     const r0 = await route(brief, { agentType: e.subagentType, backends: backendsOf($, s.backend) })
     if (!r0) return next(e)
     // Never dearer than the chat that sent it or the Subagents ceiling; effort at least medium (helpers at low miscounted).
-    const clamped = clampTier(r0.tier, live.modelFloor, live.modelCeiling)
+    const clamped = clampTier(r0.tier, live.modelFloor, 'L')
     const tier = [clamped, parent, ceiling].reduce((a, b) => (PRICE[b] < PRICE[a] ? b : a))
     const effort = clampEffort(r0.effort, live.effortFloor, live.effortCeiling)
     const d: Decision = { ...r0, tier, effort: (EFFORT_RANK[effort] ?? 0) < 1 ? 'medium' : effort }

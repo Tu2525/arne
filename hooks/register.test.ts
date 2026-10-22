@@ -820,7 +820,9 @@ test('two arne plugins enabled: a write finds the row arne owns; two rows of its
   s.rowPrefix = 'arne@x'
   s.rows = []
   await $.command.run({ command: 'arne', args: 'subagents on' })
-  expect(s.toasts.at(-1)).toBe('Could not change subagents: no /config row with key arne.subagents ($.config.list names them; rows ending .subagents: none)')
+  const n = s.toasts.length
+  await $.command.run({ command: 'arne', args: 'subagents on' })
+  expect(s.toasts.length).toBe(n) // no row anywhere: applies for the session, no rollback toast
   s.rowPrefix = undefined
   await $.command.run({ command: 'arne', args: 'subagents on' })
 })
@@ -933,8 +935,8 @@ test('Subagents reads its ceiling in Settings, not in the panel; no Esc hint, si
   expect(await band.find({ type: 'Text', text: /Esc/ }).catch(() => undefined)).toBeUndefined()
   expect(await band.find({ key: 'subs-on' }).catch(() => undefined)).toBeUndefined()
   await band.press({ key: 'gear' })
-  expect((await band.find({ key: 'subagents-off' })).props.label).toBe('✓ Off') // the picked segment carries a ✓
-  expect((await band.find({ key: 'subagents-sonnet' })).props.label).toBe('Sonnet')
+  expect((await band.find({ key: 'subagents-sonnet' })).props.label).toBe('✓ Sonnet') // the picked segment carries a ✓
+  expect((await band.find({ key: 'subagents-off' })).props.label).toBe('Off')
 })
 
 // --- The redesign: dim secondary text, a quiet resting line, alerts in macOS order ---
@@ -1049,10 +1051,60 @@ test('the panel: the why sentence, then one footnote with the last turn\'s cost;
   expect(footer[1].props.label).toBe('Turn arne off')
 })
 
-test('subagents are left alone until the user turns routing on (experimental, off by default)', async ($: any, on: any) => {
+test('subagents are routed under a Sonnet ceiling by default', async ($: any, on: any) => {
   engine(on)
   on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a search"}', isAnswered: true } }))
   on('agent.spawn', (_$: unknown, e: any) => ({ model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }))
   const r = await $.agent.spawn({ tool_use_id: 't1', prompt: 'list every atom', description: 'atoms', subagentType: 'Plan', parentModel: 'claude-opus-5-5', background: false, fork: false })
-  expect(r.model).toBe('claude-opus-5-5')
+  expect(r.model).toBe('claude-sonnet-5-5')
+})
+
+test('a model gets three failed attempts before the retry moves one model up, and the next prompts stay there for two turns', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-haiku-5-5')
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"small script"}', isAnswered: true } }))
+  await $.config.set({ key: 'arne.attempts', value: 3 })
+  const send = async (text: string) => {
+    await $.prompt.submit(typed(text))
+    await clock.settle()
+  }
+  await send('write a script that counts the tests')
+  expect(s.ran).toEqual([])
+  await send('it says 199, that is wrong, try again')
+  await send('still 199, that is wrong, try again')
+  expect(s.ran).toEqual([])
+  await send('still wrong, try again')
+  expect(s.ran).toEqual(['/model claude-sonnet-5-5'])
+  await $.classic.PostModelSwitch({ from_model: 'claude-haiku-5-5', to_model: 'claude-sonnet-5-5', requested_model: 'claude-sonnet-5-5', source: 'command' })
+  // The judge says Haiku again, but the hold keeps Sonnet for two prompts.
+  await send('write a script for the other test file')
+  await send('write a script for the third test file')
+  expect(s.ran).toEqual(['/model claude-sonnet-5-5'])
+  await send('write a script for the last test file')
+  expect(s.ran.at(-1)).toBe('/model claude-haiku-5-5')
+})
+
+test('the judge never picks Opus, but a failed attempt on Sonnet goes up to it', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  on('model.complete', () => ({ value: { text: '{"tier":"L","effort":"high","reason":"a design"}', isAnswered: true } }))
+  await $.config.set({ key: 'arne.attempts', value: 3 })
+  const send = async (text: string) => {
+    await $.prompt.submit(typed(text))
+    await clock.settle()
+  }
+  await send('design the cache layer for this service')
+  expect(s.ran).toEqual([])
+  for (const t of ['it says 199, that is wrong, try again', 'still 199, that is wrong, try again']) await send(t)
+  expect(s.ran).toEqual([])
+  await send('still wrong, try again')
+  expect(s.ran).toEqual(['/model claude-opus-5-5'])
+})
+
+test('the same retry words typed again still count as another failed attempt', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  on('model.complete', () => ({ value: { text: '{"tier":"M","effort":"medium","reason":"a script"}', isAnswered: true } }))
+  for (const t of ['write a script that counts the tests', 'try again', 'try again', 'try again']) {
+    await $.prompt.submit(typed(t))
+    await clock.settle()
+  }
+  expect(s.ran).toEqual(['/model claude-opus-5-5'])
 })

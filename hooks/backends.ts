@@ -10,7 +10,8 @@ export const SYSTEM = `You route a coding-assistant prompt to a model tier. Repl
 S = trivial lookup or edit, or a search, read or list (a subagent's brief to find or map code is S).
 M = normal coding, including multi-step or multi-file chores: edits, re-renders, commits, running tools.
 L = only when the hard part is the thinking: architecture, a race or subtle bug, a security review.
-Many steps is not L: the model hands searches and grunt work to cheap subagents. When unsure, pick M.`
+Many steps is not L: the model hands searches and grunt work to cheap subagents. When unsure, pick M.
+Effort is high when the prompt asks to think hard or be careful, or touches security.`
 
 // Pure: a model reply to a verdict, or undefined when it is not one.
 export function parseVerdict(text: string): Verdict | undefined {
