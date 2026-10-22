@@ -5,6 +5,7 @@ import { JEV_MODEL, JEV_URL, LAYA_URL, parseVerdict, SYSTEM, SYSTEM_ONE_TIMEOUT_
 import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, overTurns, paysOffAfter, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, OUT, READ } from './econ'
 import type { BandState, Row as CostRow } from './econ'
 import { MODEL, failedAttempt, route } from './route'
+import { VERSION } from './version'
 import type { Backend, Decision, Tier } from './route'
 import { parseUsage, periodStart, PERIODS, savedText, summarize, usageRow } from './stats'
 import type { Period, UsageRow } from './stats'
@@ -847,7 +848,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
         ])}
       </Box>
       <Box key="settings-notes" flexDirection="column">
-        <Text size="footnote" dimColor>Subagents are experimental. Also in /config.</Text>
+        <Text size="footnote" dimColor>{`arne ${VERSION}. Subagents are experimental. Also in /config.`}</Text>
       </Box>
     </Box>
   )
