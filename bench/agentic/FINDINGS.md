@@ -27,7 +27,7 @@ Run on 2026-10-21, logged-in Claude plan. Costs are the session's `total_cost_us
 Any change to a file the task did not ask for fails the run.
 
 **Single-prompt bench** (`run.sh`, `score.cjs`): 4 tasks × 5 reps, each a fresh session.
-**Multi-prompt bench** (`multi.sh`, `score-multi.cjs`): one chat of 5 prompts in order (lookup, explanation, JSDoc edit, write a count script, edit that script), so context grows and arne can switch between prompts. 3 chats per setup. Results in `D:/arne-bench/multi`.
+**Multi-prompt bench** (`multi.sh`, `score-multi.cjs`): one chat of 5 prompts in order (lookup, explanation, JSDoc edit, write a count script, edit that script), so context grows and arne can switch between prompts. 3 chats per setup. Results go in the folder `ARNE_MULTI_DIR` points to (see Rerunning the bench).
 
 ## Multi-prompt results (3 chats × 5 prompts)
 
@@ -82,8 +82,8 @@ bash bench/agentic/run.sh 5
 node bench/agentic/score.cjs
 
 # Multi-prompt bench: one 5-prompt chat per run, REPS chats per setup.
-ARNE_MULTI_DIR=D:/arne-bench/multi bash bench/agentic/multi.sh 3
-ARNE_MULTI_DIR=D:/arne-bench/multi node bench/agentic/score-multi.cjs
+ARNE_MULTI_DIR=./bench-out/multi bash bench/agentic/multi.sh 3
+ARNE_MULTI_DIR=./bench-out/multi node bench/agentic/score-multi.cjs
 ```
 
 - `CONDS` picks setups, e.g. `CONDS="arne arnehaiku"`. Multi-prompt setups: `opus`, `sonnet`, `arne`, `arnesonnet`, `arneopus`, `arnehaiku`, `arnefloor`, `effopus`, `effsonnet`.

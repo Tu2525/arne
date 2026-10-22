@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Failure escalation on an APPS task Haiku fails and Sonnet passes. Two prompts: write the solution, then "that did not work".
-# Usage: [FAILS=n] ARNE_SRC=path/to/arne TASKS=D:/.../apps-tasks TASK=apps-2140 OUT=... bash bench/hard/apps-escalate.sh [reps]
+# Usage: [FAILS=n] ARNE_SRC=path/to/arne TASKS=path/to/apps-tasks TASK=apps-2140 OUT=... bash bench/hard/apps-escalate.sh [reps]
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; BENCH="$HERE/../agentic"
 ARNE_SRC="${ARNE_SRC:?}"; TASKS="${TASKS:?}"; TASK="${TASK:-apps-2140}"; REPS="${1:-3}"
