@@ -307,14 +307,14 @@ const DEFAULTS: Live = {
   auto: true,
   backend: 'haiku',
   modelFloor: 'haiku',
-  modelCeiling: 'opus',
+  modelCeiling: 'sonnet', // the judge stops here; only a failed attempt goes on to Opus
   effortFloor: 'low',
   effortCeiling: 'high',
   compactModel: 'haiku',
   coldTokens: 30_000,
   heavyTokens: 150_000,
   continueAfterCompact: true,
-  subagents: 'off', // experimental: routing a subagent is opt-in
+  subagents: 'sonnet', // a subagent runs on Sonnet at most
   handoff: 'newchat',
 }
 // 17y: Subagents was On/Off before it became a ceiling; On reads as Sonnet, Off as off. Auto is no ceiling (Opus).
@@ -640,7 +640,7 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
     if (!r) return undefined
     if (r.source === 'escalate') hold = { tier: r.tier, left: HOLD_TURNS }
     else if (hold && hold.left-- > 0 && RANK[r.tier] < RANK[hold.tier]) r = { ...r, tier: hold.tier, reason: `${r.reason}; held after a failure` }
-    d = { ...r, tier: clampTier(r.tier, live.modelFloor, live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
+    d = { ...r, tier: clampTier(r.tier, live.modelFloor, r.source === 'escalate' ? 'L' : live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
   }
   // Never route to a model whose window is smaller than the chat: a bigger tier takes the prompt instead.
   // This is the one thing that moves a pin, and the band then says why ("the chat needs a bigger window").
@@ -1253,7 +1253,7 @@ export const register: Register = (on, options) => {
     const r0 = await route(brief, { agentType: e.subagentType, backends: backendsOf($, s.backend) })
     if (!r0) return next(e)
     // Never dearer than the chat that sent it or the Subagents ceiling; effort at least medium (helpers at low miscounted).
-    const clamped = clampTier(r0.tier, live.modelFloor, live.modelCeiling)
+    const clamped = clampTier(r0.tier, live.modelFloor, 'L')
     const tier = [clamped, parent, ceiling].reduce((a, b) => (PRICE[b] < PRICE[a] ? b : a))
     const effort = clampEffort(r0.effort, live.effortFloor, live.effortCeiling)
     const d: Decision = { ...r0, tier, effort: (EFFORT_RANK[effort] ?? 0) < 1 ? 'medium' : effort }
