@@ -263,7 +263,6 @@ let prev: Decision | undefined
 const HOLD_TURNS = 2
 let hold: { tier: Tier; left: number } | undefined
 let failures = 0 // failed attempts reported at the current tier; the person's retry is not a new tier until live.attempts of them
-let failText = ''
 const RANK: Record<Tier, number> = { S: 0, M: 1, L: 2 }
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
@@ -315,7 +314,7 @@ const DEFAULTS: Live = {
   effortCeiling: 'high',
   compactModel: 'haiku',
   coldTokens: 30_000,
-  attempts: 3,
+  attempts: 1, // measured: 3 retries in a row talked a passing Sonnet answer into failing (0/3 vs 3/3)
   heavyTokens: 150_000,
   continueAfterCompact: true,
   subagents: 'sonnet', // a subagent runs on Sonnet at most
@@ -640,11 +639,7 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
     const card = await taskCard($, c)
     const api: any = await $.session.messages({ as: 'api' }).catch(() => [])
     const failed = failedAttempt(Array.isArray(api) ? api : [], text)
-    if (!failed) failures = 0
-    else if (text !== failText) {
-      failText = text
-      failures++
-    }
+    failures = failed ? failures + 1 : 0
     // A failure under the limit retries on the same model; the one that reaches it goes up.
     const retry = failed && prev && failures < live.attempts
     let r = retry

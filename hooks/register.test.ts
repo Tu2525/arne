@@ -1062,6 +1062,7 @@ test('subagents are routed under a Sonnet ceiling by default', async ($: any, on
 test('a model gets three failed attempts before the retry moves one model up, and the next prompts stay there for two turns', async ($: any, on: any) => {
   const { s, clock } = engine(on, 'claude-haiku-5-5')
   on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"small script"}', isAnswered: true } }))
+  await $.config.set({ key: 'arne.attempts', value: 3 })
   const send = async (text: string) => {
     await $.prompt.submit(typed(text))
     await clock.settle()
@@ -1085,6 +1086,7 @@ test('a model gets three failed attempts before the retry moves one model up, an
 test('the judge never picks Opus, but a failed attempt on Sonnet goes up to it', async ($: any, on: any) => {
   const { s, clock } = engine(on, 'claude-sonnet-5-5')
   on('model.complete', () => ({ value: { text: '{"tier":"L","effort":"high","reason":"a design"}', isAnswered: true } }))
+  await $.config.set({ key: 'arne.attempts', value: 3 })
   const send = async (text: string) => {
     await $.prompt.submit(typed(text))
     await clock.settle()
@@ -1094,5 +1096,15 @@ test('the judge never picks Opus, but a failed attempt on Sonnet goes up to it',
   for (const t of ['it says 199, that is wrong, try again', 'still 199, that is wrong, try again']) await send(t)
   expect(s.ran).toEqual([])
   await send('still wrong, try again')
+  expect(s.ran).toEqual(['/model claude-opus-5-5'])
+})
+
+test('the same retry words typed again still count as another failed attempt', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  on('model.complete', () => ({ value: { text: '{"tier":"M","effort":"medium","reason":"a script"}', isAnswered: true } }))
+  for (const t of ['write a script that counts the tests', 'try again', 'try again', 'try again']) {
+    await $.prompt.submit(typed(t))
+    await clock.settle()
+  }
   expect(s.ran).toEqual(['/model claude-opus-5-5'])
 })
