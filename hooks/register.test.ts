@@ -1059,7 +1059,7 @@ test('subagents are routed under a Sonnet ceiling by default', async ($: any, on
   expect(r.model).toBe('claude-sonnet-5-5')
 })
 
-test('a failed attempt moves one model up at once, and the next prompts stay there for two turns', async ($: any, on: any) => {
+test('a model gets three failed attempts before the retry moves one model up, and the next prompts stay there for two turns', async ($: any, on: any) => {
   const { s, clock } = engine(on, 'claude-haiku-5-5')
   on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"small script"}', isAnswered: true } }))
   const send = async (text: string) => {
@@ -1069,6 +1069,9 @@ test('a failed attempt moves one model up at once, and the next prompts stay the
   await send('write a script that counts the tests')
   expect(s.ran).toEqual([])
   await send('it says 199, that is wrong, try again')
+  await send('still 199, that is wrong, try again')
+  expect(s.ran).toEqual([])
+  await send('still wrong, try again')
   expect(s.ran).toEqual(['/model claude-sonnet-5-5'])
   await $.classic.PostModelSwitch({ from_model: 'claude-haiku-5-5', to_model: 'claude-sonnet-5-5', requested_model: 'claude-sonnet-5-5', source: 'command' })
   // The judge says Haiku again, but the hold keeps Sonnet for two prompts.
@@ -1088,6 +1091,8 @@ test('the judge never picks Opus, but a failed attempt on Sonnet goes up to it',
   }
   await send('design the cache layer for this service')
   expect(s.ran).toEqual([])
-  await send('it says 199, that is wrong, try again')
+  for (const t of ['it says 199, that is wrong, try again', 'still 199, that is wrong, try again']) await send(t)
+  expect(s.ran).toEqual([])
+  await send('still wrong, try again')
   expect(s.ran).toEqual(['/model claude-opus-5-5'])
 })

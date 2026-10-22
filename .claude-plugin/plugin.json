@@ -15,6 +15,7 @@
     "effortFloor": { "type": "string", "title": "Lowest effort", "description": "Never think less than this.", "options": ["low", "medium", "high", "xhigh", "max"], "default": "low" },
     "effortCeiling": { "type": "string", "title": "Highest effort", "description": "Never think more than this. The judges stop at high; xhigh and max come from a pin or a floor.", "options": ["low", "medium", "high", "xhigh", "max"], "default": "high" },
     "compactModel": { "type": "string", "title": "Compaction model", "description": "The model that writes compaction summaries.", "options": ["haiku", "sonnet"], "default": "haiku" },
+    "attempts": { "type": "number", "title": "Attempts before moving up", "description": "After this many failed attempts at a model, the next retry goes one model up.", "default": 3 },
     "coldTokens": { "type": "number", "title": "Cold offer above (tokens)", "description": "Offer the cold-cache actions on chats at least this big.", "default": 30000 },
     "heavyTokens": { "type": "number", "title": "Heavy warning above (tokens)", "description": "The band warns about a chat this big.", "default": 150000 },
     "continueAfterCompact": { "type": "boolean", "title": "Continue after /compact", "description": "After a manual compact, send \"Continue where you left off.\" when the work stopped mid-task.", "default": true }

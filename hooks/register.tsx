@@ -262,6 +262,8 @@ let prev: Decision | undefined
 // as small does not drop straight back to the model that failed (claude-router holds 2 turns too).
 const HOLD_TURNS = 2
 let hold: { tier: Tier; left: number } | undefined
+let failures = 0 // failed attempts reported at the current tier; the person's retry is not a new tier until live.attempts of them
+let failText = ''
 const RANK: Record<Tier, number> = { S: 0, M: 1, L: 2 }
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
@@ -298,6 +300,7 @@ type Live = {
   effortCeiling: string
   compactModel: string
   coldTokens: number
+  attempts: number // failed attempts at a tier before a retry goes one up
   heavyTokens: number
   continueAfterCompact: boolean
   subagents: string // 17y: the dearest model a subagent may run on (haiku, sonnet, opus), or off
@@ -312,6 +315,7 @@ const DEFAULTS: Live = {
   effortCeiling: 'high',
   compactModel: 'haiku',
   coldTokens: 30_000,
+  attempts: 3,
   heavyTokens: 150_000,
   continueAfterCompact: true,
   subagents: 'sonnet', // a subagent runs on Sonnet at most
@@ -636,9 +640,21 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
     const card = await taskCard($, c)
     const api: any = await $.session.messages({ as: 'api' }).catch(() => [])
     const failed = failedAttempt(Array.isArray(api) ? api : [], text)
-    let r = await route(text, { prev, failed, paused: await read($, isPaused), backends: backendsOf($, s.backend, card) })
+    if (!failed) failures = 0
+    else if (text !== failText) {
+      failText = text
+      failures++
+    }
+    // A failure under the limit retries on the same model; the one that reaches it goes up.
+    const retry = failed && prev && failures < live.attempts
+    let r = retry
+      ? ({ ...prev, reason: `attempt ${failures + 1} of ${live.attempts} at this tier`, source: 'prev' } as Decision)
+      : await route(text, { prev, failed, paused: await read($, isPaused), backends: backendsOf($, s.backend, card) })
     if (!r) return undefined
-    if (r.source === 'escalate') hold = { tier: r.tier, left: HOLD_TURNS }
+    if (r.source === 'escalate') {
+      hold = { tier: r.tier, left: HOLD_TURNS }
+      failures = 0
+    }
     else if (hold && hold.left-- > 0 && RANK[r.tier] < RANK[hold.tier]) r = { ...r, tier: hold.tier, reason: `${r.reason}; held after a failure` }
     d = { ...r, tier: clampTier(r.tier, live.modelFloor, r.source === 'escalate' ? 'L' : live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
   }
