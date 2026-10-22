@@ -4,7 +4,7 @@ import type { Register } from 'claude-code'
 import { JEV_MODEL, JEV_URL, LAYA_URL, parseVerdict, SYSTEM, SYSTEM_ONE_TIMEOUT_MS, systemOneBody, systemOneVerdict } from './backends'
 import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, overTurns, paysOffAfter, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, OUT, READ } from './econ'
 import type { BandState, Row as CostRow } from './econ'
-import { MODEL, route } from './route'
+import { MODEL, failedAttempt, route } from './route'
 import type { Backend, Decision, Tier } from './route'
 import { parseUsage, periodStart, PERIODS, savedText, summarize, usageRow } from './stats'
 import type { Period, UsageRow } from './stats'
@@ -258,6 +258,11 @@ async function sendAnyway($: any) {
 
 // Module state. Reset on a reload, like every module variable (what must survive one is in atoms, 17u).
 let prev: Decision | undefined
+// After an escalation, the next HOLD_TURNS prompts stay at least on its tier, so a judge that read the retry
+// as small does not drop straight back to the model that failed (claude-router holds 2 turns too).
+const HOLD_TURNS = 2
+let hold: { tier: Tier; left: number } | undefined
+const RANK: Record<Tier, number> = { S: 0, M: 1, L: 2 }
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
 let arneSwitched = false // arne's own /model ran: the next main turn's cache writes are the switch's (17q)
@@ -377,6 +382,9 @@ async function ownSet($: any, key: string, value: unknown): Promise<{ value: unk
   const mine = named.filter(row => JSON.stringify([row.key, row.provider ?? null]).includes('arne'))
   if (mine.length > 1) return { deny: 'two copies of arne are enabled; turn one off in /plugin' }
   if (mine.length) return mine[0]!.key !== key ? setOnce($, mine[0]!.key, value) : r
+  // The engine lists no row for this option at all: nothing can persist it, but the surfaces already hold
+  // the value, so it applies for this session instead of rolling back with an error.
+  if (!named.length) return { value }
   // Name the rows it saw, so a toast says what the engine calls this option.
   return { deny: `${r.deny.replace(/\)$/, '')}; rows ending .${field}: ${named.map(row => row.key).join(', ') || 'none'})` }
 }
@@ -626,8 +634,12 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
     d = { tier: pin.tier ?? tierOf(await $.session.model()) ?? 'M', effort, reason: 'pinned', source: 'pin', keepEffort: !pin.effort }
   } else {
     const card = await taskCard($, c)
-    const r = await route(text, { prev, paused: await read($, isPaused), backends: backendsOf($, s.backend, card) })
+    const api: any = await $.session.messages({ as: 'api' }).catch(() => [])
+    const failed = failedAttempt(Array.isArray(api) ? api : [], text)
+    let r = await route(text, { prev, failed, paused: await read($, isPaused), backends: backendsOf($, s.backend, card) })
     if (!r) return undefined
+    if (r.source === 'escalate') hold = { tier: r.tier, left: HOLD_TURNS }
+    else if (hold && hold.left-- > 0 && RANK[r.tier] < RANK[hold.tier]) r = { ...r, tier: hold.tier, reason: `${r.reason}; held after a failure` }
     d = { ...r, tier: clampTier(r.tier, live.modelFloor, live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
   }
   // Never route to a model whose window is smaller than the chat: a bigger tier takes the prompt instead.
@@ -643,7 +655,8 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
 async function switchTarget($: any, d: Decision): Promise<string | undefined> {
   const chat = tierOf(await $.session.model())
   if (!chat || d.tier === chat) return undefined
-  if (d.source === 'pin') return MODEL[d.tier]
+  // An escalation moves even on a warm cache: a cold write costs less than failing again.
+  if (d.source === 'pin' || d.source === 'escalate') return MODEL[d.tier]
   const c: Cache | null = await read($, cache)
   const plan = planSwitch({ decided: d.tier, chat, C: c?.C ?? 0, warmUntil: c?.warmUntil ?? {}, now: await $.clock.now() })
   return plan.why === 'sticky' ? undefined : MODEL[d.tier]

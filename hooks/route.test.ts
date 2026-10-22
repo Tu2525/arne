@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { parseVerdict, systemOneVerdict } from './backends'
 
-import { route, MODEL } from './route'
+import { failedAttempt, route, MODEL } from './route'
 import type { Backend, Decision } from './route'
 
 const prev: Decision = { tier: 'M', effort: 'medium', reason: 'x', source: 'haiku' }
@@ -89,4 +89,30 @@ test('the sample System One response gives tier and effort through argmax (17s)'
 test('a System One answer under 0.5 confidence falls through (17s)', async () => {
   expect(systemOneVerdict({ ...SAMPLE, tier: { ...SAMPLE.tier, confidence: 0.4 } })).toBe(undefined)
   expect(systemOneVerdict({ ...SAMPLE, effort: { ...SAMPLE.effort, confidence: 0.49 } })).toBe(undefined)
+})
+
+test('a failed attempt goes one tier and one effort up from prev, without asking the judge', async () => {
+  let asked = 0
+  const counting: Backend = { name: 'haiku', ask: async () => (asked++, { tier: 'S', effort: 'low', reason: 'b' }) }
+  const haiku: Decision = { tier: 'S', effort: 'low', reason: 'x', source: 'haiku' }
+  const d = await route('still wrong', { prev: haiku, failed: true, backends: [counting] })
+  expect(d?.tier).toBe('M')
+  expect(d?.effort).toBe('medium')
+  expect(d?.source).toBe('escalate')
+  expect((await route('x', { prev: { ...haiku, tier: 'L', effort: 'high' }, failed: true }))?.tier).toBe('L')
+  expect(asked).toBe(0)
+  expect((await route('fix it', { failed: true, backends: [counting] }))?.source).toBe('haiku') // no prev: nothing to go up from
+})
+
+test('failedAttempt: the person says so, or the same tool error twice with an edit between', () => {
+  for (const t of ["that didn't work", 'still failing', 'it says 199, try again', 'same error']) expect(failedAttempt([], t)).toBe(true)
+  for (const t of ['add a test', "I didn't mean that file", 'make it work offline']) expect(failedAttempt([], t)).toBe(false)
+  const err = (n: number) => ({ role: 'user', content: [{ type: 'tool_result', is_error: true, content: `Error at line ${n}: x is undefined` }] })
+  const edit = { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: {} }] }
+  const run = { role: 'assistant', content: [{ type: 'tool_use', name: 'Read', input: {} }] }
+  const typed = { role: 'user', content: 'fix the crash' }
+  expect(failedAttempt([typed, err(3), edit, err(9)], 'next')).toBe(true) // line numbers differ, same error
+  expect(failedAttempt([typed, err(3), run, err(9)], 'next')).toBe(false) // no edit between: not a failed fix
+  expect(failedAttempt([err(3), edit, err(9), typed], 'next')).toBe(false) // before the last prompt
+  expect(failedAttempt([typed, err(3), edit, err(9), { role: 'user', content: 'next' }], 'next')).toBe(true) // new prompt already in
 })

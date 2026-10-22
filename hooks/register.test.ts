@@ -820,7 +820,9 @@ test('two arne plugins enabled: a write finds the row arne owns; two rows of its
   s.rowPrefix = 'arne@x'
   s.rows = []
   await $.command.run({ command: 'arne', args: 'subagents on' })
-  expect(s.toasts.at(-1)).toBe('Could not change subagents: no /config row with key arne.subagents ($.config.list names them; rows ending .subagents: none)')
+  const n = s.toasts.length
+  await $.command.run({ command: 'arne', args: 'subagents on' })
+  expect(s.toasts.length).toBe(n) // no row anywhere: applies for the session, no rollback toast
   s.rowPrefix = undefined
   await $.command.run({ command: 'arne', args: 'subagents on' })
 })
@@ -1055,4 +1057,24 @@ test('subagents are left alone until the user turns routing on (experimental, of
   on('agent.spawn', (_$: unknown, e: any) => ({ model: e.model ?? e.parentModel, agentId: `a-${e.tool_use_id}` }))
   const r = await $.agent.spawn({ tool_use_id: 't1', prompt: 'list every atom', description: 'atoms', subagentType: 'Plan', parentModel: 'claude-opus-5-5', background: false, fork: false })
   expect(r.model).toBe('claude-opus-5-5')
+})
+
+test('a failed attempt moves one model up at once, and the next prompts stay there for two turns', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-haiku-5-5')
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"small script"}', isAnswered: true } }))
+  const send = async (text: string) => {
+    await $.prompt.submit(typed(text))
+    await clock.settle()
+  }
+  await send('write a script that counts the tests')
+  expect(s.ran).toEqual([])
+  await send('it says 199, that is wrong, try again')
+  expect(s.ran).toEqual(['/model claude-sonnet-5-5'])
+  await $.classic.PostModelSwitch({ from_model: 'claude-haiku-5-5', to_model: 'claude-sonnet-5-5', requested_model: 'claude-sonnet-5-5', source: 'command' })
+  // The judge says Haiku again, but the hold keeps Sonnet for two prompts.
+  await send('write a script for the other test file')
+  await send('write a script for the third test file')
+  expect(s.ran).toEqual(['/model claude-sonnet-5-5'])
+  await send('write a script for the last test file')
+  expect(s.ran.at(-1)).toBe('/model claude-haiku-5-5')
 })
