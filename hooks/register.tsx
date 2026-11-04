@@ -819,6 +819,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
             { value: 'laya', label: 'Laya' },
             { value: 'jev', label: 'Jev' },
           ]),
+          choice('Move up on failure', 'escalate', [{ value: true, label: 'On' }, { value: false, label: 'Off' }]),
           choice('Subagents', 'subagents', [
             { value: 'auto', label: 'Auto' },
             { value: 'haiku', label: 'Haiku' },
