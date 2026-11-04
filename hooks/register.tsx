@@ -300,6 +300,7 @@ type Live = {
   effortCeiling: string
   compactModel: string
   coldTokens: number
+  escalate: boolean // off: a failed attempt changes nothing
   attempts: number // failed attempts at a tier before a retry goes one up
   heavyTokens: number
   continueAfterCompact: boolean
@@ -315,6 +316,7 @@ const DEFAULTS: Live = {
   effortCeiling: 'high',
   compactModel: 'haiku',
   coldTokens: 30_000,
+  escalate: true,
   attempts: 1, // measured: 3 retries in a row talked a passing Sonnet answer into failing (0/3 vs 3/3)
   heavyTokens: 150_000,
   continueAfterCompact: true,
@@ -639,7 +641,7 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
   } else {
     const card = await taskCard($, c)
     const api: any = await $.session.messages({ as: 'api' }).catch(() => [])
-    const failed = failedAttempt(Array.isArray(api) ? api : [], text)
+    const failed = live.escalate && failedAttempt(Array.isArray(api) ? api : [], text)
     failures = failed ? failures + 1 : 0
     // A failure under the limit retries on the same model; the one that reaches it goes up.
     const retry = failed && prev && failures < live.attempts
