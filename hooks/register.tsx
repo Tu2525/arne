@@ -260,19 +260,25 @@ async function sendAnyway($: any) {
 }
 
 
-// Module state. Reset on a reload, like every module variable (what must survive one is in atoms, 17u).
-let prev: Decision | undefined
-// After an escalation, the next HOLD_TURNS prompts stay at least on its tier, so a judge that read the retry
-// as small does not drop straight back to the model that failed (claude-router holds 2 turns too).
+// The main loop's routing state, an atom so a settings change (which reloads arne) does not wipe it:
+// prev is the last decision; after an escalation, the next HOLD_TURNS prompts stay at least on its tier (hold),
+// so a judge that read the retry as small does not drop straight back to the model that failed (claude-router
+// holds 2 turns too); failures counts failed attempts at the current tier, up to live.attempts.
+const routeState = atom({ plugin: 'arne', key: 'route' } as const, { prev: null, hold: null, failures: 0 })
 const HOLD_TURNS = 2
-let hold: { tier: Tier; left: number } | undefined
-let failures = 0 // failed attempts reported at the current tier; the person's retry is not a new tier until live.attempts of them
+// Module state. Reset on a reload, like every module variable (what must survive one is in atoms, 17u).
 const RANK: Record<Tier, number> = { S: 0, M: 1, L: 2 }
 let switching = false // arne's own /model is queued or running: the session model may still be the old one
 let lastResponseAt: number | undefined
 let arneSwitched = false // arne's own /model ran: the next main turn's cache writes are the switch's (17q)
-// Decisions made at prompt.submit, by text, for the turn.start of the same prompt.
+// Decisions made at prompt.submit, by text, for the turn.start of the same prompt. At most 20: a prompt
+// dropped before its turn.start would stay forever, so the oldest goes.
 const planned = new Map<string, Decision>()
+function plan(text: string, d: Decision) {
+  planned.delete(text)
+  planned.set(text, d)
+  if (planned.size > 20) planned.delete(planned.keys().next().value!)
+}
 // Subagent decisions, by agentId, so each step of a run uses the effort picked at its spawn (17x).
 const agents = new Map<string, Decision | undefined>()
 // Picks whose spawn has not resolved yet: the subagent's first request can arrive before its agentId does.
@@ -634,6 +640,10 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
   // A pin is the person's own pick, so it skips the floor and ceiling (how xhigh, max or a capped tier are reached).
   const pin = s.pin ?? undefined
   const c: Cache | null = await read($, cache)
+  const st = await read($, routeState)
+  const prev = st.prev ?? undefined
+  let hold = st.hold && { ...st.hold }
+  let failures = st.failures
   let d: Decision
   if (pin?.tier || pin?.effort) {
     const effort = pin.effort ?? (((await read($, appEffort)) ?? 'medium') as Decision['effort'])
@@ -662,7 +672,7 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
   // This is the one thing that moves a pin, and the band then says why ("the chat needs a bigger window").
   const tier = c ? fitTier(d.tier, c.C) : d.tier
   const sized = tier === d.tier ? d : { ...d, tier, reason: 'window' }
-  prev = sized
+  await update($, routeState, () => ({ prev: sized, hold, failures }))
   return sized
 }
 
@@ -719,7 +729,7 @@ async function switchThenSend($: any, target: string | undefined, effort: Decisi
 // here, since prompt.submit will not see it: decided, and the real /model moved first when it should.
 async function routeAndSend($: any, text: string) {
   const d = await decideMain($, text)
-  if (d) planned.set(text, d)
+  if (d) plan(text, d)
   const target = d && (await switchTarget($, d))
   const effort = d && (await effortTarget($, d, target ?? (await $.session.model())))
   if (target || effort) await switchThenSend($, target, effort, text)
@@ -1063,6 +1073,7 @@ export const register: Register = (on, options) => {
     // Each turn's real usage goes to the log, for Stats across reloads (17q). A turn with none is not logged.
     const row = usageRow(isMain ? 'turn' : 'agent', await $.clock.now(), r.usage ?? e.usage, undefined, isMain && arneSwitched)
     if (isMain) arneSwitched = false
+    else agents.delete(e.agentId!) // the run is over: its pick is not needed again
     if (row) await appendLog($, row)
     return r
   })
@@ -1123,7 +1134,7 @@ export const register: Register = (on, options) => {
     }
     await update($, routing, () => true)
     const d = await decideMain($, e.text).finally(() => update($, routing, () => false))
-    if (d) planned.set(e.text, d)
+    if (d) plan(e.text, d)
     const target = d && (await switchTarget($, d))
     const effort = d && (await effortTarget($, d, target ?? (await $.session.model())))
     if (!target && !effort) return next(e)

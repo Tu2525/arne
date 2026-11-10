@@ -1206,3 +1206,24 @@ test('a logged prompt is cut to 4,000 characters', async ($: any, on: any) => {
   const row = JSON.parse([...disk.values()].join('').trim())
   expect(row.text.length).toBe(4000)
 })
+
+test('routing state is an atom: "continue" after a settings change (a reload) keeps the previous tier', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
+  const ROUTE = { plugin: 'arne', key: 'route' }
+  // The kit cannot reload the module, and a reload keeps atoms only. So the atom is made to hold what an
+  // earlier load left (an escalation to Opus) in place of this decision: only state, not a module variable, can carry it.
+  const earlier = { prev: { tier: 'L', effort: 'high', reason: 'last attempt failed', source: 'escalate', above: true }, hold: null, failures: 0 }
+  const written: any[] = []
+  on('state.set', ROUTE, (_$: unknown, e: { value: unknown }, next: any) => (written.push(e.value), next({ ...e, value: earlier })))
+  const send = async (text: string) => {
+    await $.prompt.submit(typed(text))
+    await clock.settle()
+  }
+  await send('what is a mutex')
+  expect(s.ran).toEqual(['/model claude-haiku-5-5'])
+  expect(written.at(-1).prev.tier).toBe('S')
+  await $.config.set({ key: 'arne.coldTokens', value: 40_000 })
+  await send('continue')
+  expect(s.ran).toEqual(['/model claude-haiku-5-5', '/model claude-opus-5-5'])
+})
