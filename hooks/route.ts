@@ -2,7 +2,8 @@ export type Tier = 'S' | 'M' | 'L'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Verdict = { tier: Tier; effort: Effort; reason: string }
 // keepEffort: a model-only pin; the request keeps the effort the app sends, whatever `effort` says.
-export type Decision = Verdict & { source: string; keepEffort?: boolean }
+// above: this decision may pass the model ceiling (an escalation, or a hold after one); a continuation inherits it.
+export type Decision = Verdict & { source: string; keepEffort?: boolean; above?: boolean }
 export type Backend = { name: string; ask: (text: string) => Promise<Verdict | undefined> }
 export type Ctx = {
   prev?: Decision
@@ -43,7 +44,8 @@ const UP_TIER: Record<Tier, Tier> = { S: 'M', M: 'L', L: 'L' }
 const UP_EFFORT: Record<Effort, Effort> = { low: 'medium', medium: 'high', high: 'high', xhigh: 'xhigh', max: 'max' }
 
 // The person says the last attempt did not work.
-export const RETRY = /\b(did ?n[o']?t work|does ?n[o']?t work|not working|still (?:fail\w*|broken|wrong|not \w+|does ?n[o']?t \w+)|try again|that'?s (?:wrong|not right)|wrong (?:answer|number|result|output)|same error)\b/i
+// It counts only on a short prompt after an attempt that edited or ran something ("why is login not working" is a question).
+export const RETRY = /\b(did ?n[o']?t work|does ?n[o']?t work|still (?:fail\w*|broken|wrong|does ?n[o']?t \w+)|try again|that'?s (?:wrong|not right)|wrong (?:answer|number|result|output)|same error)\b/i
 
 type ApiMessage = { role: string; content: unknown }
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'])
@@ -53,9 +55,8 @@ const textOf = (c: unknown): string => blocksOf(c).map(b => (b.type === 'text' ?
 const signature = (b: any) => textOf(b.content).replace(/\d+/g, '#').trim().slice(0, 300)
 
 // Pure: whether the attempt since the last prompt the person typed failed. After claude-router (MIT): the same
-// tool error twice with an edit between them. Or the new prompt says so (RETRY).
+// tool error twice with an edit between them. Or the new prompt says so (RETRY), short, after an edit or a command.
 export function failedAttempt(messages: readonly ApiMessage[], text: string): boolean {
-  if (RETRY.test(text)) return true
   const isTyped = (m: ApiMessage) => m.role === 'user' && !blocksOf(m.content).some(b => b.type === 'tool_result')
   let typed = messages.findLastIndex(isTyped)
   // The new prompt may already be in the transcript: then the attempt is the one before it.
@@ -69,6 +70,7 @@ export function failedAttempt(messages: readonly ApiMessage[], text: string): bo
       if (m.role === 'assistant' && b.type === 'tool_use' && EDIT_TOOLS.has(b.name)) edits.push(at)
     }
   })
+  if (edits.length && text.trim().length < FOLLOW_MAX && RETRY.test(text)) return true
   return errors.some((a, i) => errors.slice(i + 1).some(b => b.sig === a.sig && edits.some(e => e > a.at && e < b.at)))
 }
 

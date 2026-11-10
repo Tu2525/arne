@@ -105,14 +105,29 @@ test('a failed attempt goes one tier and one effort up from prev, without asking
 })
 
 test('failedAttempt: the person says so, or the same tool error twice with an edit between', () => {
-  for (const t of ["that didn't work", 'still failing', 'it says 199, try again', 'same error']) expect(failedAttempt([], t)).toBe(true)
-  for (const t of ['add a test', "I didn't mean that file", 'make it work offline']) expect(failedAttempt([], t)).toBe(false)
   const err = (n: number) => ({ role: 'user', content: [{ type: 'tool_result', is_error: true, content: `Error at line ${n}: x is undefined` }] })
   const edit = { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: {} }] }
   const run = { role: 'assistant', content: [{ type: 'tool_use', name: 'Read', input: {} }] }
   const typed = { role: 'user', content: 'fix the crash' }
+  for (const t of ["that didn't work", 'still failing', 'it says 199, try again', 'same error']) expect(failedAttempt([typed, edit], t)).toBe(true)
+  for (const t of ['add a test', "I didn't mean that file", 'make it work offline']) expect(failedAttempt([typed, edit], t)).toBe(false)
   expect(failedAttempt([typed, err(3), edit, err(9)], 'next')).toBe(true) // line numbers differ, same error
   expect(failedAttempt([typed, err(3), run, err(9)], 'next')).toBe(false) // no edit between: not a failed fix
   expect(failedAttempt([err(3), edit, err(9), typed], 'next')).toBe(false) // before the last prompt
   expect(failedAttempt([typed, err(3), edit, err(9), { role: 'user', content: 'next' }], 'next')).toBe(true) // new prompt already in
+})
+
+test('failedAttempt: retry words count only on a short prompt after an edit or a command', () => {
+  const edit = { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: {} }] }
+  const bash = { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }] }
+  const read = { role: 'assistant', content: [{ type: 'tool_use', name: 'Read', input: {} }] }
+  const typed = { role: 'user', content: 'fix the crash' }
+  // The audit's false positives: two are no longer retry words at all, the third had no edit to fail.
+  expect(failedAttempt([typed, edit], 'I am still not sure about the naming')).toBe(false)
+  expect(failedAttempt([typed, edit], 'explain why login is not working in prod')).toBe(false)
+  expect(failedAttempt([typed, read], "that's wrong on purpose, keep it")).toBe(false)
+  expect(failedAttempt([], 'still wrong, try again')).toBe(false) // nothing was attempted
+  expect(failedAttempt([typed, edit], 'still wrong, try again')).toBe(true)
+  expect(failedAttempt([typed, bash], 'still wrong, try again')).toBe(true)
+  expect(failedAttempt([typed, edit], `try again, ${'and this time read every file under hooks first '.repeat(2)}`)).toBe(false) // a new brief, not a complaint
 })

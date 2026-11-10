@@ -1,6 +1,7 @@
 {
   "name": "arne",
   "owner": { "name": "tu2525" },
+  "description": "arne: routes each Claude Code prompt to the cheapest model and effort that can handle it.",
   "plugins": [
     {
       "name": "arne",

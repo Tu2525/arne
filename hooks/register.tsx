@@ -649,12 +649,14 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
       ? ({ ...prev, reason: `attempt ${failures + 1} of ${live.attempts} at this tier`, source: 'prev' } as Decision)
       : await route(text, { prev, failed, paused: await read($, isPaused), backends: backendsOf($, s.backend, card) })
     if (!r) return undefined
+    // An escalation and the hold after it may pass the ceiling (above); a continuation of either inherits the flag.
     if (r.source === 'escalate') {
       hold = { tier: r.tier, left: HOLD_TURNS }
       failures = 0
+      r = { ...r, above: true }
     }
-    else if (hold && hold.left-- > 0 && RANK[r.tier] < RANK[hold.tier]) r = { ...r, tier: hold.tier, reason: `${r.reason}; held after a failure` }
-    d = { ...r, tier: clampTier(r.tier, live.modelFloor, r.source === 'escalate' ? 'L' : live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
+    else if (hold && hold.left-- > 0 && RANK[r.tier] <= RANK[hold.tier]) r = { ...r, tier: hold.tier, reason: `${r.reason}; held after a failure`, above: true }
+    d = { ...r, tier: clampTier(r.tier, live.modelFloor, r.above ? 'L' : live.modelCeiling), effort: clampEffort(r.effort, live.effortFloor, live.effortCeiling) }
   }
   // Never route to a model whose window is smaller than the chat: a bigger tier takes the prompt instead.
   // This is the one thing that moves a pin, and the band then says why ("the chat needs a bigger window").

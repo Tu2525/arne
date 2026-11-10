@@ -1059,8 +1059,15 @@ test('subagents are routed under a Sonnet ceiling by default', async ($: any, on
   expect(r.model).toBe('claude-sonnet-5-5')
 })
 
+// The last attempt edited a file, so a short "try again" reads as a failed attempt (route.ts RETRY).
+function edited(on: any) {
+  const api = [{ role: 'user', content: 'do the task' }, { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: {} }] }]
+  on('session.messages', (_$: unknown, e: { as?: string } | undefined) => ({ value: e?.as === 'api' ? api : [] }))
+}
+
 test('a model gets three failed attempts before the retry moves one model up, and the next prompts stay there for two turns', async ($: any, on: any) => {
   const { s, clock } = engine(on, 'claude-haiku-5-5')
+  edited(on)
   on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"small script"}', isAnswered: true } }))
   await $.config.set({ key: 'arne.attempts', value: 3 })
   const send = async (text: string) => {
@@ -1085,6 +1092,7 @@ test('a model gets three failed attempts before the retry moves one model up, an
 
 test('the judge never picks Opus, but a failed attempt on Sonnet goes up to it', async ($: any, on: any) => {
   const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  edited(on)
   on('model.complete', () => ({ value: { text: '{"tier":"L","effort":"high","reason":"a design"}', isAnswered: true } }))
   await $.config.set({ key: 'arne.attempts', value: 3 })
   const send = async (text: string) => {
@@ -1101,8 +1109,39 @@ test('the judge never picks Opus, but a failed attempt on Sonnet goes up to it',
 
 test('the same retry words typed again still count as another failed attempt', async ($: any, on: any) => {
   const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  edited(on)
   on('model.complete', () => ({ value: { text: '{"tier":"M","effort":"medium","reason":"a script"}', isAnswered: true } }))
   for (const t of ['write a script that counts the tests', 'try again', 'try again', 'try again']) {
+    await $.prompt.submit(typed(t))
+    await clock.settle()
+  }
+  expect(s.ran).toEqual(['/model claude-opus-5-5'])
+})
+
+test('after Sonnet fails, the hold keeps Opus above the ceiling for two new tasks, then drops back', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  edited(on)
+  on('model.complete', () => ({ value: { text: '{"tier":"M","effort":"medium","reason":"a script"}', isAnswered: true } }))
+  const send = async (text: string) => {
+    await $.prompt.submit(typed(text))
+    await clock.settle()
+  }
+  await send('write a script that counts the tests')
+  await send('still wrong, try again')
+  expect(s.ran).toEqual(['/model claude-opus-5-5'])
+  await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'claude-opus-5-5', source: 'command' })
+  await send('write a script for the other test file')
+  await send('write a script for the third test file')
+  expect(s.ran).toEqual(['/model claude-opus-5-5']) // no second /model: the hold passes the Sonnet ceiling
+  await send('write a script for the last test file')
+  expect(s.ran).toEqual(['/model claude-opus-5-5', '/model claude-sonnet-5-5'])
+})
+
+test('"ok continue" after an escalation to Opus stays on Opus', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-sonnet-5-5')
+  edited(on)
+  on('model.complete', () => ({ value: { text: '{"tier":"M","effort":"medium","reason":"a script"}', isAnswered: true } }))
+  for (const t of ['write a script that counts the tests', 'still wrong, try again', 'ok continue', 'ok continue', 'ok continue']) {
     await $.prompt.submit(typed(t))
     await clock.settle()
   }
