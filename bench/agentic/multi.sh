@@ -16,13 +16,13 @@ BM="$(cygpath -m "$B" 2>/dev/null || echo "$B")"
 rm -rf "$B/arne-plugin" && mkdir -p "$B/arne-plugin"
 cp -r "$ARNE/.claude-plugin" "$ARNE/hooks" "$ARNE/types" "$B/arne-plugin/"
 rm -f "$B/arne-plugin/hooks/"*.test.ts
-sed -i -E "s#^const LOG_FILE = '[^']*'#const LOG_FILE = '$BM/arne-decisions.jsonl'#; s#^const SETTINGS_FILE = '[^']*'#const SETTINGS_FILE = '$BM/no-settings.json'#" "$B/arne-plugin/hooks/register.tsx"
+sed -i -E "s#^const LOG_DIR = '[^']*'#const LOG_DIR = '$BM/arne-log'#; s#^const LEGACY_LOG = '[^']*'#const LEGACY_LOG = '$BM/arne-decisions.jsonl'#; s#^const SETTINGS_FILE = '[^']*'#const SETTINGS_FILE = '$BM/no-settings.json'#" "$B/arne-plugin/hooks/register.tsx"
 sed -i "s#e.origin.kind === 'bridge'#e.origin.kind === 'bridge' || e.origin.kind === 'sdk'#" "$B/arne-plugin/hooks/register.tsx"
 # Same arne with Sonnet as its cheapest model: it can only switch between Sonnet and Opus.
 rm -rf "$B/arne-floor" && cp -r "$B/arne-plugin" "$B/arne-floor" && sed -i "s#modelFloor: 'haiku',#modelFloor: 'sonnet',#" "$B/arne-floor/hooks/register.tsx"
 sed -i -E '/"modelFloor"/ s#"default": "haiku"#"default": "sonnet"#' "$B/arne-floor/.claude-plugin/plugin.json"
 grep -q "modelFloor: 'sonnet'," "$B/arne-floor/hooks/register.tsx" && grep -q '"modelFloor".*"default": "sonnet"' "$B/arne-floor/.claude-plugin/plugin.json" || { echo "floor patch failed" >&2; exit 1; }
-grep -q "origin.kind === 'sdk'" "$B/arne-plugin/hooks/register.tsx" && grep -q "$BM/arne-decisions.jsonl" "$B/arne-plugin/hooks/register.tsx" || { echo "arne patch failed" >&2; exit 1; }
+grep -q "origin.kind === 'sdk'" "$B/arne-plugin/hooks/register.tsx" && grep -q "$BM/arne-log'" "$B/arne-plugin/hooks/register.tsx" && grep -q "$BM/arne-decisions.jsonl" "$B/arne-plugin/hooks/register.tsx" || { echo "arne patch failed" >&2; exit 1; }
 
 cat > "$B/prompts.json" <<'JSON'
 ["Find where the threshold for showing the cold-cache band is defined and explain in three sentences how it is used. Do not change any files.",

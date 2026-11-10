@@ -11,7 +11,10 @@ import { parseUsage, periodStart, PERIODS, savedText, summarize, usageRow } from
 import type { Period, UsageRow } from './stats'
 import type { Cache, Row } from '../types'
 
-const LOG_FILE = '.claude/arne/decisions.jsonl' // under the home directory; local only, never shared
+// Under the home directory; local only, never shared. One file per day per chat: <YYYY-MM-DD>-<session id>.jsonl.
+const LOG_DIR = '.claude/arne/log'
+// The one log file before 0.4.4: Stats still reads it, nothing writes it again.
+const LEGACY_LOG = '.claude/arne/decisions.jsonl'
 
 // A path under the home directory, read at runtime; an absolute path (the bench sets one) stays as it is.
 async function homePath($: any, p: string): Promise<string> {
@@ -43,7 +46,7 @@ const held = atom({ plugin: 'arne', key: 'held' } as const, null)
 // True while effortless is enabled: it writes effort, so arne routes models only.
 const effortless = atom({ plugin: 'arne', key: 'effortless' } as const, false)
 const EFFORTLESS = 'effortless@effortless'
-const SETTINGS_FILE = '.claude/settings.json' // under the home directory, same as LOG_FILE
+const SETTINGS_FILE = '.claude/settings.json' // under the home directory, same as LOG_DIR
 const shown = atom({ plugin: 'arne', key: 'shown' } as const, null)
 // True while the band's panel is open (model, effort, why, settings).
 const whyOpen = atom({ plugin: 'arne', key: 'whyOpen' } as const, false)
@@ -472,10 +475,7 @@ async function feedback($: any, verdict: 'up' | 'down') {
   // Thanked first, so the buttons give way on the press; a failed write brings them back.
   const was = await read($, thanked)
   await update($, thanked, () => l.key)
-  try {
-    const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
-    await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify({ type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }) + '\n')
-  } catch {
+  if (!(await appendLog($, { type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }))) {
     await update($, thanked, () => was)
     $.ui.toast('Could not log that feedback')
   }
@@ -726,29 +726,45 @@ async function routeAndSend($: any, text: string) {
   else await sendAsUser($, text)
 }
 
-// $.fs has no append: read, then write the whole file. ponytail: O(n) per turn, fine below ~10k rows.
-async function appendLog($: any, row: (Row & { text: string; agent?: string; decided?: string; from?: string; to?: string; at?: number }) | UsageRow) {
-  try {
-    const old: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
-    await $.fs.write(await homePath($, LOG_FILE), old + JSON.stringify(row) + '\n')
-  } catch {
-    // no log this time
-  }
+type FeedbackRow = { type: 'feedback'; key: string; verdict: string; model: string; effort: string; reason: string; source: string }
+// $.fs has no append: read, then write the whole file. Its own file per day and chat means no other chat
+// writes it, and the chain keeps this chat's own rows (parallel subagents) from writing over each other.
+// ponytail: O(n) per row within one chat's day; fine below ~10k rows a day. Resolves false when the write failed.
+let logChain: Promise<unknown> = Promise.resolve()
+function appendLog($: any, row: (Row & { text: string; agent?: string; decided?: string; from?: string; to?: string; at?: number }) | UsageRow | FeedbackRow): Promise<boolean> {
+  const run = logChain.then(async () => {
+    const day = new Date(await $.clock.now()).toISOString().slice(0, 10)
+    const sid = String((await $.session.id().catch(() => '')) ?? '').replace(/[^\w-]/g, '_')
+    const path = await homePath($, `${LOG_DIR}/${day}-${sid}.jsonl`)
+    const old: string = await $.fs.read(path).catch(() => '')
+    await $.fs.write(path, old + JSON.stringify(row) + '\n')
+  })
+  logChain = run.catch(() => undefined)
+  return run.then(() => true, () => false)
 }
 
-// Stats for one period, from the log's usage rows (17q). ponytail: reads the whole log per call; fine
-// below ~10k rows, keep running totals in the store if it ever gets slow.
+// The usage rows at or after `since`: the day files from the day before it on (names are UTC days), and the
+// legacy log. ponytail: reads them whole per call; keep running totals in the store if it ever gets slow.
+async function logRows($: any, since: number): Promise<UsageRow[]> {
+  const dir = await homePath($, LOG_DIR)
+  const from = new Date(since - 86_400_000).toISOString().slice(0, 10)
+  const files: { name: string; kind: string }[] = await $.fs.list(dir).catch(() => [])
+  const paths = files.filter(f => f.kind === 'file' && f.name.endsWith('.jsonl') && f.name.slice(0, 10) >= from).map(f => `${dir}/${f.name}`)
+  const texts: string[] = await Promise.all([await homePath($, LEGACY_LOG), ...paths].map(p => $.fs.read(p).catch(() => '')))
+  return parseUsage(texts.join('\n'))
+}
+
+// Stats for one period, from the log's usage rows (17q).
 async function statsFor($: any, period: Period) {
-  const text: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
-  return summarize(parseUsage(text), periodStart(period, await $.clock.now()))
+  const since = periodStart(period, await $.clock.now())
+  return summarize(await logRows($, since), since)
 }
 
 // Opens the band's panel on a view. Stats reads all three periods from one parse here, so a period
 // press only redraws (17u).
 async function openView($: any, view: View) {
   if (view === 'stats') {
-    const text: string = await $.fs.read(await homePath($, LOG_FILE)).catch(() => '')
-    const rows = parseUsage(text)
+    const rows = await logRows($, 0)
     const now: number = await $.clock.now()
     await update($, statsData, () => Object.fromEntries(PERIODS.map(([p]) => [p, summarize(rows, periodStart(p, now))])))
   }
@@ -1338,7 +1354,7 @@ export const register: Register = (on, options) => {
         }
         await update($, last, () => row)
         await update($, log, list => [...list, row].slice(-200))
-        await appendLog($, { ...row, text: e.text, decided: decided ? MODEL[decided.tier] : undefined })
+        await appendLog($, { ...row, text: e.text.slice(0, 4000), decided: decided ? MODEL[decided.tier] : undefined })
       }
     }
 

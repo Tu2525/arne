@@ -442,13 +442,23 @@ test('the judge gets the conversation so far ahead of the new prompt (17p)', asy
   expect(prompts[0]).toContain('New prompt to judge:\nrefactor the helpers in this module please')
 })
 
+// An in-memory disk under /home/t, so a test never reads or writes the real log. The engine hands the hooks
+// resolved paths (F:\home\t\... on Windows): keys are kept as /home/t/....
+function memDisk(on: any) {
+  const disk = new Map<string, string>()
+  const key = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', (_$: unknown, e: { path: string }) => ({ value: disk.get(key(e.path)) ?? '' }))
+  on('fs.write', (_$: unknown, e: { path: string; text: string }) => (disk.set(key(e.path), e.text), { value: undefined }))
+  on('fs.list', (_$: unknown, e: { path: string }) => ({
+    value: [...disk.keys()].filter(k => k.startsWith(`${key(e.path)}/`)).map(k => ({ name: k.slice(key(e.path).length + 1), kind: 'file', size: 0, mtimeMs: 0, isLink: false })),
+  }))
+  return disk
+}
+
 test('a finished turn logs its usage, and Stats and /arne stats show the estimate against Opus and Sonnet (17q)', async ($: any, on: any) => {
   engine(on, 'claude-haiku-5-5')
-  // An in-memory disk, so the test never reads or writes the real decisions.jsonl.
-  const disk = new Map<string, string>()
-  on('env.get', () => ({ value: '/home/t' }))
-  on('fs.read', (_$: unknown, e: { path: string }) => ({ value: disk.get(e.path) ?? '' }))
-  on('fs.write', (_$: unknown, e: { path: string; text: string }) => (disk.set(e.path, e.text), { value: undefined }))
+  const disk = memDisk(on)
   on('turn.complete', (_$: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
   const usage = { model: 'claude-haiku-5-5', input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 0 }
   await $.turn.complete({ turnId: 's1', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, usage })
@@ -1146,4 +1156,53 @@ test('"ok continue" after an escalation to Opus stays on Opus', async ($: any, o
     await clock.settle()
   }
   expect(s.ran).toEqual(['/model claude-opus-5-5'])
+})
+
+const HAIKU_USAGE = { model: 'claude-haiku-5-5', input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 0 }
+const LOG = '/home/t/.claude/arne/log'
+
+test('each chat writes its own day file: two chats in turn, and parallel rows in one chat, lose no rows', async ($: any, on: any) => {
+  engine(on, 'claude-haiku-5-5')
+  const disk = memDisk(on)
+  let sid = 'A'
+  on('session.id', () => ({ value: sid }))
+  on('turn.complete', (_$: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  const done = (turnId: string, agentId?: string) => $.turn.complete({ turnId, agentId, reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, usage: HAIKU_USAGE })
+  await done('a1')
+  sid = 'B'
+  await done('b1')
+  sid = 'A'
+  await done('a2')
+  await Promise.all([done('a3', 'x'), done('a3', 'y'), done('a3', 'z')])
+  expect([...disk.keys()].sort()).toEqual([`${LOG}/1970-01-01-A.jsonl`, `${LOG}/1970-01-01-B.jsonl`])
+  expect(disk.get(`${LOG}/1970-01-01-A.jsonl`)!.trim().split('\n').length).toBe(5)
+  expect(disk.get(`${LOG}/1970-01-01-B.jsonl`)!.trim().split('\n').length).toBe(1)
+})
+
+test('Stats sums the day files and the legacy decisions.jsonl, and never writes the legacy file', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-haiku-5-5')
+  const disk = memDisk(on)
+  on('turn.complete', (_$: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  const legacy = `${JSON.stringify({ type: 'usage', at: 500_000, kind: 'turn', model: 'claude-haiku-5-5', input: 1000, read: 100_000, write: 0, out: 2000 })}\n`
+  disk.set('/home/t/.claude/arne/decisions.jsonl', legacy)
+  const done = (turnId: string) => $.turn.complete({ turnId, reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, usage: HAIKU_USAGE })
+  await done('t1')
+  await clock.advance(2 * 24 * 60 * 60_000)
+  await done('t2')
+  expect([...disk.keys()].filter(k => k.startsWith(LOG)).length).toBe(2)
+  const text = (await $.command.run({ command: 'arne', args: 'stats' })).text
+  expect(text).toContain('All time: $0.06 spent over 3 turns')
+  expect(text).toContain('Today: $0.02 spent over 1 turns')
+  expect(disk.get('/home/t/.claude/arne/decisions.jsonl')).toBe(legacy)
+})
+
+test('a logged prompt is cut to 4,000 characters', async ($: any, on: any) => {
+  const { clock } = engine(on, 'claude-sonnet-5-5')
+  const disk = memDisk(on)
+  on('turn.start', (_$: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('model.complete', () => ({ value: { text: '{"tier":"M","effort":"medium","reason":"x"}', isAnswered: true } }))
+  await $.turn.start({ text: `refactor ${'x'.repeat(9000)}`, turnId: 'p1' })
+  await clock.settle()
+  const row = JSON.parse([...disk.values()].join('').trim())
+  expect(row.text.length).toBe(4000)
 })

@@ -1,4 +1,4 @@
-// Stats (17q): what arne saved, from the usage rows in decisions.jsonl. An estimate: each turn's real
+// Stats (17q): what arne saved, from the usage rows in arne's log. An estimate: each turn's real
 // tokens priced again as if it ran on a baseline model. Effort has no price of its own here: a different
 // effort or model would have written different output, and that cannot be known, so the tokens stay as they were.
 import { dollars, OUT, PRICE, READ, tierOf, WRITE } from './econ'
@@ -107,7 +107,7 @@ export function savedText(spent: number, base: number): { headline: string; sub:
   }
 }
 
-/** The usage rows of a decisions.jsonl text; other rows and broken lines are skipped. */
+/** The usage rows of a log text; other rows and broken lines are skipped. */
 export function parseUsage(text: string): UsageRow[] {
   const rows: UsageRow[] = []
   for (const line of text.split('\n')) {

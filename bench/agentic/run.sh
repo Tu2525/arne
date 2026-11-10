@@ -28,11 +28,11 @@ BM="$(cygpath -m "$B" 2>/dev/null || echo "$B")"
 rm -rf "$B/arne-plugin" && mkdir -p "$B/arne-plugin"
 cp -r "$ARNE/.claude-plugin" "$ARNE/hooks" "$ARNE/types" "$B/arne-plugin/"
 rm -f "$B/arne-plugin/hooks/"*.test.ts
-sed -i -E "s#^const LOG_FILE = '[^']*'#const LOG_FILE = '$BM/arne-decisions.jsonl'#; s#^const SETTINGS_FILE = '[^']*'#const SETTINGS_FILE = '$BM/no-settings.json'#" "$B/arne-plugin/hooks/register.tsx"
+sed -i -E "s#^const LOG_DIR = '[^']*'#const LOG_DIR = '$BM/arne-log'#; s#^const LEGACY_LOG = '[^']*'#const LEGACY_LOG = '$BM/arne-decisions.jsonl'#; s#^const SETTINGS_FILE = '[^']*'#const SETTINGS_FILE = '$BM/no-settings.json'#" "$B/arne-plugin/hooks/register.tsx"
 # claude -p has no composer, so its prompts arrive as origin sdk; the bench copy treats those as typed, so the real /model runs (drive.mjs).
 sed -i "s#e.origin.kind === 'bridge'#e.origin.kind === 'bridge' || e.origin.kind === 'sdk'#" "$B/arne-plugin/hooks/register.tsx"
 grep -q "origin.kind === 'sdk'" "$B/arne-plugin/hooks/register.tsx" || { echo "arne sdk patch failed" >&2; exit 1; }
-grep -q "$BM/arne-decisions.jsonl" "$B/arne-plugin/hooks/register.tsx" || { echo "arne log path patch failed" >&2; exit 1; }
+grep -q "$BM/arne-log'" "$B/arne-plugin/hooks/register.tsx" && grep -q "$BM/arne-decisions.jsonl" "$B/arne-plugin/hooks/register.tsx" || { echo "arne log path patch failed" >&2; exit 1; }
 grep -q "$BM/no-settings.json" "$B/arne-plugin/hooks/register.tsx" || { echo "arne settings path patch failed" >&2; exit 1; }
 
 one() {
