@@ -172,9 +172,10 @@ export type BandInput = {
   heavyTokens?: number
 }
 
-const SHORT: Record<string, string> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus' }
+// ponytail: fable is named for the band only; it has no tier, so arne neither routes nor prices a Fable chat. Add a tier if that changes.
+const SHORT: Record<string, string> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable' }
 const EFFORT_SHORT: Record<string, string> = { low: 'low', medium: 'med', high: 'high', xhigh: 'xhi', max: 'max' }
-export const shortModel = (model: string) => SHORT[(/haiku|sonnet|opus/.exec(model)?.[0] ?? '')] ?? model
+export const shortModel = (model: string) => SHORT[(/haiku|sonnet|opus|fable/.exec(model)?.[0] ?? '')] ?? model
 export const shortEffort = (effort?: string) => (effort ? EFFORT_SHORT[effort] ?? effort : '-')
 
 /** The band's state and its two texts: `text` for the band, `short` for the status line. */
