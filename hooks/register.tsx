@@ -167,7 +167,7 @@ async function syncCard($: any) {
 
 // --- Icons ---
 // Lucide (ISC, lucide.dev): each icon's inner markup on its 24px grid. Only the apps have Svg, so the
-// terminal draws none. An Svg is drawn as an image, off the page, so it takes no ThemeKey and no
+// terminal draws a glyph instead. An Svg is drawn as an image, off the page, so it takes no ThemeKey and no
 // currentColor: the stroke is one grey that reads on the light and the dark theme both.
 const LUCIDE = {
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
@@ -185,10 +185,13 @@ const ICON_GREY = '#8c8b86' // 3.4:1 on white, 4.4:1 on the dark card
 const ICON_WARN = '#d97706'
 const ICON_PX = 14
 
+// The terminal has no Svg: it gets a plain glyph in the same place, as GeminiClaude does.
+const GLYPH: Record<IconName, string> = { settings: '⚙', stats: '▥', alert: '!', route: '›', limits: '≡', power: '○', handoff: '⇄', up: '+', down: '−' }
+
 // `el` is the band's element table, its Svg left out on the terminal. Decorative: the text beside it says the same, so no alt.
 function icon(el: any, name: IconName, color = ICON_GREY) {
-  const { Svg } = el
-  if (!Svg) return undefined
+  const { Svg, Text } = el
+  if (!Svg) return <Text key={`glyph-${name}`} dimColor color={color === ICON_WARN ? 'warning' : undefined}>{GLYPH[name]}</Text>
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_PX}" height="${ICON_PX}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${LUCIDE[name]}</svg>`
   return <Svg source={source} alt="" width={ICON_PX} height={ICON_PX} />
 }
@@ -197,7 +200,6 @@ function icon(el: any, name: IconName, color = ICON_GREY) {
 // A Button takes only text inside it, so the icon sits beside the Button, not in it.
 function withIcon(el: any, name: IconName, node: unknown, color?: string) {
   const i = icon(el, name, color)
-  if (!i) return node as any
   const { Box } = el
   return (
     <Box flexDirection="row" alignItems="center" gap={1}>

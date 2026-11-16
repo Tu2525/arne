@@ -1109,7 +1109,7 @@ test('Settings starts with ‹ Back, then its title; the Judge row offers Jev; L
   expect(view.children[0].props.key).toBe('view-head')
   const head = await band.find({ key: 'view-head' })
   expect(head.children[0].props.label).toBe('‹ Back')
-  expect(head.children[1]).toMatchObject({ type: 'Text', props: { weight: 'semibold' } })
+  expect(head.children.at(-1)).toMatchObject({ type: 'Text', props: { weight: 'semibold' } })
   expect(await band.find({ type: 'Text', text: 'Settings' })).toBeDefined()
   expect((await band.find({ key: 'backend-jev' })).props.label).toBe('Jev')
   expect(await band.find({ type: 'Text', text: 'Limits' })).toBeDefined()
@@ -1171,9 +1171,12 @@ test('the panel: the why sentence, then one footnote with the last turn\'s cost;
   await band.press({ key: 'band' })
   expect(await band.find({ type: 'Text', text: 'Sonnet at medium effort: a multi-file edit.' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /^Last turn \$\d+\.\d\d$/ })).toBeDefined()
+  // Each footer control has a glyph beside it on the terminal, so they are found by key.
+  for (const [key, label] of [['gear', 'Settings'], ['open-stats', 'Stats'], ['handoff-menu', 'Handoff…'], ['auto', 'Turn arne off']]) {
+    expect((await band.find({ key })).props.label).toBe(label)
+  }
   const footer = (await band.find({ key: 'footer' })).children
-  expect(footer[0].children.map((b: any) => b.props.label)).toEqual(['Settings', 'Stats', 'Handoff…'])
-  expect(footer[1].props.label).toBe('Turn arne off')
+  expect(footer).toHaveLength(2) // the controls on the left, Turn off alone on the right
 })
 
 test('subagents are routed under a Sonnet ceiling by default', async ($: any, on: any) => {
