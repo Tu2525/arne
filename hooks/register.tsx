@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { JEV_MODEL, JEV_URL, LAYA_URL, parseVerdict, SYSTEM, SYSTEM_ONE_TIMEOUT_MS, systemOneBody, systemOneVerdict } from './backends'
-import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, overTurns, paysOffAfter, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, OUT, READ } from './econ'
+import { bandText, CACHE_TTL, clampEffort, clampTier, coldAdvice, contextOf, costCompact, costContinue, dollars, EFFORT_LABEL, EFFORT_LABEL_SHORT, EFFORT_RANK, fillOf, fitRest, fitTier, midTask, mmss, nextTtl, overTurns, paysOffAfter, plainReason, planSwitch, shortModel, summaryPrompt, tierOf, PRICE, priceAt, OUT, READ } from './econ'
 import type { BandState, Row as CostRow } from './econ'
 import { MODEL, failedAttempt, route } from './route'
 import { VERSION } from './version'
@@ -79,6 +79,7 @@ const heavyDismissed = atom({ plugin: 'arne', key: 'heavyDismissed' } as const, 
 const compacting = atom({ plugin: 'arne', key: 'compacting' } as const, false)
 // `claude plugin disable effortless` is running (up to 60 s): its button is hidden meanwhile.
 const disabling = atom({ plugin: 'arne', key: 'disabling' } as const, false)
+const effortlessOff = atom({ plugin: 'arne', key: 'effortlessOff' } as const, false)
 // The main turn's decision, for its steps.
 const currentAtom = atom({ plugin: 'arne', key: 'current' } as const, null)
 // The session model arne expects: the one it last switched to, or last saw. A switch to another tier is the person's.
@@ -98,6 +99,23 @@ const statsData = atom({ plugin: 'arne', key: 'stats' } as const, null)
 // of every button, so Settings and Stats moved into the band, whose buttons answer at once.
 type View = 'main' | 'settings' | 'stats'
 const panelView = atom({ plugin: 'arne', key: 'panelView' } as const, 'main')
+// The person's answer in a chat on a model arne has no tier for (Fable): stay on it, or let arne route.
+// Kept with the chat's id, so a reload does not ask again and a new chat does.
+type Untiered = { chat: string; pick: 'stay' | 'route' } | null
+const untiered = atom({ plugin: 'arne', key: 'untiered' } as const, null)
+const chatId = ($: any): Promise<string> => Promise.resolve($.session.id()).catch(() => '')
+async function untieredPick($: any): Promise<'stay' | 'route' | undefined> {
+  const u: Untiered = await read($, untiered)
+  return u && u.chat === (await chatId($)) ? u.pick : undefined
+}
+const pickUntiered = async ($: any, pick: 'stay' | 'route') => {
+  const chat = await chatId($)
+  await update($, untiered, () => ({ chat, pick }))
+}
+// On such a model arne stands by: no judge call, no effort, no subagent pick, nothing logged.
+async function standingBy($: any): Promise<boolean> {
+  return !tierOf(await $.session.model()) && (await untieredPick($)) !== 'route'
+}
 const TIER_NAME_OF: Record<Tier, string> = { S: 'haiku', M: 'sonnet', L: 'opus' }
 const STATES: BandState[] = ['routing', 'off', 'paused', 'cold', 'heavy', 'normal']
 
@@ -117,6 +135,7 @@ async function disableEffortless($: any) {
   await update($, disabling, () => true)
   const r = await $.process.run(['claude', 'plugin', 'disable', EFFORTLESS], { timeoutMs: 60_000 }).catch(() => undefined)
   await update($, disabling, () => false)
+  if (r?.exitCode === 0) await update($, effortlessOff, () => true)
   $.ui.toast(r?.exitCode === 0 ? 'Effortless disabled. Restart to hand effort to arne.' : 'Could not disable effortless; disable it from the plugin list.')
 }
 
@@ -163,6 +182,7 @@ async function handoff($: any, tier: Tier, surface?: string) {
   if (await read($, compacting)) return void (handingOff = false)
   await update($, compacting, () => true)
   let step = 'the summary'
+  let saved = false
   try {
     const msgs: any = await $.session.messages()
     const said = (Array.isArray(msgs) ? msgs : []).filter((m: any) => m.text?.trim())
@@ -180,9 +200,10 @@ Summary of an earlier chat (written by ${shortModel(live.compactModel)} for arne
 
 ${r.text}
 `
-    await $.fs.write(HANDOFF_FILE, text).catch(() => undefined)
+    saved = await $.fs.write(HANDOFF_FILE, text).then(() => true, () => false)
     step = 'the clipboard'
-    const copied = await $.ui.copy({ text, surface }).catch(() => undefined)
+    // A rejected copy is a failed copy; a call that resolves with nothing counts as copied.
+    const copied = await $.ui.copy({ text, surface }).catch(() => ({ isCopied: false }))
     if (copied?.isCopied === false) throw new Error('copy')
     if (live.handoff !== 'clear') {
       // No plugin call opens a new chat or pastes into one, so the old chat is left alone.
@@ -208,7 +229,14 @@ ${r.text}
     await update($, handedOff, () => tier)
     $.ui.toast(`Handed off to ${shortModel(MODEL[tier])}. Old chat saved in history; archive it from the sidebar when you are done.`)
   } catch {
-    $.ui.toast(`Handoff stopped at ${step}.${step === 'the summary' ? '' : ` The summary is on your clipboard and in ${HANDOFF_FILE}.`}`)
+    const file = saved ? ` and in ${HANDOFF_FILE}` : ''
+    $.ui.toast(
+      step === 'the summary'
+        ? 'Handoff stopped: the summary could not be made. Nothing was changed.'
+        : step === 'the clipboard'
+          ? `Handoff stopped: the summary was not copied.${saved ? ` It is saved in ${HANDOFF_FILE}.` : ''}`
+          : `Handoff stopped at ${step}. The summary is on your clipboard${file}.`,
+    )
   } finally {
     handingOff = false
     await update($, compacting, () => false)
@@ -252,6 +280,16 @@ async function compactThenContinue($: any) {
   if (ok) await routeAndSend($, CONTINUE_TEXT)
 }
 
+// Puts the held text back in the prompt box to edit or drop. If the fill fails it stays held.
+async function editHeld($: any) {
+  const text = await read($, held)
+  if (!text) return
+  // A fill that resolves as not filled is a failure too, as with ui.copy's isCopied.
+  const ok = await $.prompt.fill({ text, mode: 'replace' }).then((r: any) => r?.isFilled !== false, () => false)
+  if (ok) await update($, held, () => null)
+  else $.ui.toast('Could not move your message to the prompt box; it is still held')
+}
+
 async function sendAnyway($: any) {
   const text = await read($, held)
   if (!text) return
@@ -283,6 +321,10 @@ function plan(text: string, d: Decision) {
 const agents = new Map<string, Decision | undefined>()
 // Picks whose spawn has not resolved yet: the subagent's first request can arrive before its agentId does.
 const pendingPicks: Decision[] = []
+// What a picked subagent would have run on without arne, whatever the chat runs: the model its call named, or
+// Explore's own Haiku. Stats prices the baselines with it.
+// ponytail: a call naming a model under the ceiling gets no pick, so its baseline is the chat's. Record it at spawn if such calls grow common.
+const ownModel = new WeakMap<Decision, string>()
 // A step of an agent with no pick yet claims the oldest pending pick on its model (effortless's helperEffortOf).
 function agentPick(agentId: string, model: string): Decision | undefined {
   if (agents.has(agentId)) return agents.get(agentId)
@@ -475,15 +517,24 @@ async function moveModel($: any, target: string) {
 }
 
 // Good call / Wrong call on the last decision: a correction label for the classifier, written beside the log rows.
+// Set before the first await, so two presses in one tick write one row.
+let rating = false
 async function feedback($: any, verdict: 'up' | 'down') {
-  const l = await read($, last)
-  if (!l) return
-  // Thanked first, so the buttons give way on the press; a failed write brings them back.
-  const was = await read($, thanked)
-  await update($, thanked, () => l.key)
-  if (!(await appendLog($, { type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }))) {
-    await update($, thanked, () => was)
-    $.ui.toast('Could not log that feedback')
+  if (rating) return
+  rating = true
+  try {
+    const l = await read($, last)
+    if (!l) return
+    const was = await read($, thanked)
+    if (was === l.key) return // already rated: one row per decision
+    // Thanked first, so the buttons give way on the press; a failed write brings them back.
+    await update($, thanked, () => l.key)
+    if (!(await appendLog($, { type: 'feedback', key: l.key, verdict, model: l.model, effort: l.effort, reason: l.reason, source: l.source }))) {
+      await update($, thanked, () => was)
+      $.ui.toast('Could not log that feedback')
+    }
+  } finally {
+    rating = false
   }
 }
 
@@ -592,6 +643,9 @@ function backendsOf($: any, backend: string, card = ''): Backend[] {
         { model: 'haiku', prompt, system: SYSTEM + (await projectContext($)), effort: 'low' },
         { timeoutMs: 3000 },
       )
+      // The judge's own tokens are arne's spend: Stats counts them against it.
+      const used = usageRow('judge', await $.clock.now(), r.usage, MODEL.S)
+      if (used) await appendLog($, used)
       return r.isAnswered ? parseVerdict(r.text) : undefined
     },
   }
@@ -627,7 +681,7 @@ function backendsOf($: any, backend: string, card = ''): Backend[] {
 // The main loop's decision for one prompt, inside the floor and ceiling (pins included).
 async function decideMain($: any, text: string): Promise<Decision | undefined> {
   const s = await settings($)
-  if (!s.enabled) return undefined
+  if (!s.enabled || (await standingBy($))) return undefined
   if (s.backend === 'laya' && !layaUp) {
     layaUp = await layaHealthy($)
     if (!layaUp) void startLaya($)
@@ -680,7 +734,9 @@ async function decideMain($: any, text: string): Promise<Decision | undefined> {
 // A pin always moves; otherwise only where planSwitch says moving pays (a cache boundary, or worth it).
 async function switchTarget($: any, d: Decision): Promise<string | undefined> {
   const chat = tierOf(await $.session.model())
-  if (!chat || d.tier === chat) return undefined
+  if (d.tier === chat) return undefined
+  // A model with no tier (Fable) gets a decision only once the person let arne route: any move leaves it.
+  if (!chat) return MODEL[d.tier]
   // An escalation moves even on a warm cache: a cold write costs less than failing again.
   if (d.source === 'pin' || d.source === 'escalate') return MODEL[d.tier]
   const c: Cache | null = await read($, cache)
@@ -728,12 +784,19 @@ async function switchThenSend($: any, target: string | undefined, effort: Decisi
 // A prompt arne sends for the person (a released hold, a continue) gets the typed prompt's treatment
 // here, since prompt.submit will not see it: decided, and the real /model moved first when it should.
 async function routeAndSend($: any, text: string) {
-  const d = await decideMain($, text)
-  if (d) plan(text, d)
-  const target = d && (await switchTarget($, d))
-  const effort = d && (await effortTarget($, d, target ?? (await $.session.model())))
-  if (target || effort) await switchThenSend($, target, effort, text)
-  else await sendAsUser($, text)
+  // sendAsUser never throws (it restores the text itself), so anything caught here failed before the
+  // message reached the host: safe to put it back without a double send.
+  try {
+    const d = await decideMain($, text)
+    if (d) plan(text, d)
+    const target = d && (await switchTarget($, d))
+    const effort = d && (await effortTarget($, d, target ?? (await $.session.model())))
+    if (target || effort) await switchThenSend($, target, effort, text)
+    else await sendAsUser($, text)
+  } catch {
+    $.ui.toast('Could not send your message; it is back in the prompt box')
+    await $.prompt.fill({ text, mode: 'replace' }).catch(() => undefined)
+  }
 }
 
 type FeedbackRow = { type: 'feedback'; key: string; verdict: string; model: string; effort: string; reason: string; source: string }
@@ -858,9 +921,11 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
         ], (
           // The judge's note sits under the card it describes. Jev's while it is the judge.
           <Box key="routing-notes" flexDirection="column">
-            <Text size="footnote" dimColor>
-              {live.backend === 'jev' ? 'Jev is hosted: your prompts leave this machine.' : 'Laya runs on this machine and learns from your ratings.'}
-            </Text>
+            {live.backend === 'jev' ? (
+              <Text size="footnote" dimColor>Jev is hosted: your prompt, recent messages, file paths and the chat's size leave this machine.</Text>
+            ) : (
+              live.backend === 'laya' && <Text size="footnote" dimColor>Laya runs on this machine.</Text>
+            )}
             {needsKey && (
               // No masked Input exists, so the key is never typed here: the button points to /config's secure field.
               <Box key="jev-key" flexDirection="row" flexWrap="wrap" columnGap={2}>
@@ -887,7 +952,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
 
 const STATS_EMPTY: Record<Period, string> = { today: 'No turns today yet.', week: 'No turns in the last 7 days yet.', all: 'No turns yet.' }
 
-// The panel's Stats view (17q): what arne saved against running every turn on Opus at medium.
+// The panel's Stats view (17q): what arne saved against running every turn on Opus, or on Sonnet, at medium.
 // An estimate, said so. Back returns to the main panel.
 async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: boolean) {
   const period = (await read($, statsPeriod)) as Period
@@ -896,19 +961,9 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
   const usd = (v: number) => `$${v.toFixed(2)}`
   // Bars as text, so they follow the theme: one accent for arne, dim for the baselines.
   const room = Math.max(10, Math.min(40, cols - 24))
-  const max = Math.max(st.spent, st.opus, 1e-9)
+  const max = Math.max(st.spent, st.opus, st.sonnet, 1e-9)
   // ▆ not █: a full block touches the label's descenders above it.
   const bar = (v: number) => '▆'.repeat(Math.max(v > 0 ? 1 : 0, Math.round((v / max) * room)))
-  const tile = (name: string, base: number) => {
-    const t = savedText(st.spent, base)
-    return (
-      <Box key={`tile-${name}`} flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1} flexGrow={1}>
-        <Text size="footnote" dimColor>{`Against ${name}`}</Text>
-        <Text size="title" weight="semibold" tabular>{t.headline}</Text>
-        <Text size="footnote" dimColor tabular>{t.sub}</Text>
-      </Box>
-    )
-  }
   return (
     <Box key="stats-view" flexDirection="column" gap={1}>
       <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
@@ -926,19 +981,23 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
       {st.turns === 0 && st.lines.length === 0 ? (
         <Box flexDirection="column">
           <Text>{STATS_EMPTY[period]}</Text>
-          <Text size="footnote" dimColor>Once there are, this shows what arne spent next to the same turns on Opus at medium effort. It is an estimate.</Text>
+          <Text size="footnote" dimColor>Once there are, this shows what arne spent next to the same turns on Opus, and on Sonnet, at medium effort. It is an estimate.</Text>
         </Box>
       ) : (
         <Box flexDirection="column" gap={1}>
-          <Box flexDirection={cols < 60 ? 'column' : 'row'} gap={1}>
-            {tile('Opus · medium', st.opus)}
+          {/* One headline: arne's own spend, with each baseline said against it. */}
+          <Box key="stats-headline" flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1}>
+            <Text size="footnote" dimColor>With arne</Text>
+            <Text size="title" weight="semibold" tabular>{usd(st.spent)}</Text>
+            <Text size="footnote" dimColor tabular>{`${savedText(st.spent, st.opus).sub} on Opus · medium`}</Text>
+            <Text size="footnote" dimColor tabular>{`${savedText(st.spent, st.sonnet).sub} on Sonnet · medium`}</Text>
           </Box>
           <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1} rowGap={gui ? 1 : 0}>
-            {([['With arne', st.spent], ['Opus · medium', st.opus]] as const).map(([label, v]) => (
+            {([['With arne', st.spent], ['Opus · medium', st.opus], ['Sonnet · medium', st.sonnet]] as const).map(([label, v]) => (
               <Box key={`bar-${label}`} flexDirection="column">
                 <Box flexDirection="row" justifyContent="space-between">
-                  <Text dimColor={label !== 'With arne'}>{label}</Text>
-                  <Text tabular>{usd(v)}</Text>
+                  <Text dimColor={label !== 'With arne'} weight={label === 'With arne' ? 'semibold' : undefined}>{label}</Text>
+                  <Text tabular dimColor={label !== 'With arne'} weight={label === 'With arne' ? 'semibold' : undefined}>{usd(v)}</Text>
                 </Box>
                 {label === 'With arne' ? <Text color="claude">{bar(v)}</Text> : <Text dimColor>{bar(v)}</Text>}
               </Box>
@@ -952,13 +1011,13 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
                   <Box flexGrow={1}>
                     <Text>{l.label}</Text>
                   </Box>
-                  <Text dimColor tabular>{l.label === 'Switches and summaries' ? `${l.count} ${l.count === 1 ? 'time' : 'times'}` : `${l.count} ${l.tokens === undefined ? 'turn' : 'call'}${l.count === 1 ? '' : 's'}`}</Text>
+                  <Text dimColor tabular>{l.label === 'Switches and summaries' ? `${l.count} ${l.count === 1 ? 'time' : 'times'}` : `${l.count} ${l.tokens === undefined && l.label !== 'Haiku judge' ? 'turn' : 'call'}${l.count === 1 ? '' : 's'}`}</Text>
                   <Text tabular>{l.tokens === undefined ? usd(l.cost) : `${l.tokens.toLocaleString('en-US')} tokens`}</Text>
                 </Box>
               ))}
             </Box>
           </Box>
-          <Text size="footnote" dimColor>An estimate: each turn's real tokens, priced again as if every turn ran on Opus at medium effort. Model switches and summaries count against arne.</Text>
+          <Text size="footnote" dimColor>An estimate: each turn's real tokens, priced again on one model at medium effort. A turn you pinned stays on the model you pinned; the judge, model switches and summaries count against arne.</Text>
         </Box>
       )}
     </Box>
@@ -1028,10 +1087,11 @@ export const register: Register = (on, options) => {
     await update($, compacting, () => false)
     await update($, compactSendingAtom, () => false)
     await update($, disabling, () => false)
+    await update($, effortlessOff, () => false)
     await update($, subCount, () => null)
     await $.command.register({
       name: 'arne',
-      description: 'Auto model and effort routing: on, off, pin, unpin, handoff, subagents, why, log, stats, backend, debug',
+      description: 'Auto model and effort routing: on, off, settings, pin, unpin, handoff, subagents, why, log, stats, backend, debug',
     })
     const eff = await effortlessOn($)
     await update($, effortless, () => eff)
@@ -1072,13 +1132,14 @@ export const register: Register = (on, options) => {
     if (isMain) lastReason = e.reason
     // Each turn's real usage goes to the log, for Stats across reloads (17q). A turn with none is not logged.
     const row = usageRow(isMain ? 'turn' : 'agent', await $.clock.now(), r.usage ?? e.usage, undefined, isMain && arneSwitched)
+    const own = isMain ? undefined : ownModel.get(agents.get(e.agentId!) as Decision)
     if (isMain) arneSwitched = false
     else agents.delete(e.agentId!) // the run is over: its pick is not needed again
-    if (row) await appendLog($, row)
+    if (row && !(await standingBy($))) await appendLog($, own ? { ...row, own } : row)
     return r
   })
 
-  // Haiku writes the summary for every compaction. If Haiku fails, the engine's own compaction stands.
+  // The compaction model (Haiku by default) writes the summary. If it fails, the engine's own compaction stands.
   on('session.compact', async ($, e, next) => {
     if (e.trigger === 'precompute' || e.messages.length < 4) return next(e)
     try {
@@ -1097,7 +1158,7 @@ export const register: Register = (on, options) => {
       const kept = e.messages.slice(-KEEP_AFTER_COMPACT) // word for word after the summary (17v)
       return {
         messages: [
-          { role: 'user', text: `Summary of the conversation so far (written by Haiku for arne):\n\n${r.text}`, toolUses: [] },
+          { role: 'user', text: `Summary of the conversation so far (written by ${shortModel(live.compactModel)} for arne):\n\n${r.text}`, toolUses: [] },
           ...kept,
         ],
       }
@@ -1127,10 +1188,16 @@ export const register: Register = (on, options) => {
     const typed = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
     // Left alone: commands, prompts typed into a running turn, and attachments (a resubmit would lose them).
     if (!typed || e.command || e.isMeta || e.turnId !== undefined || e.attachments?.length) return next(e)
-    if ((await modeOf($)) !== 'on') return next(e)
-    if (!(await read($, held)) && (await coldOffer($, await $.clock.now()))) {
+    if ((await modeOf($)) !== 'on' || (await standingBy($))) return next(e)
+    const holding = await read($, held)
+    if (holding) {
+      // Sending this one now would put it ahead of the older held message: keep them in order.
+      await update($, held, () => `${holding}\n\n${e.text}`)
+      return { drop: 'arne added this to the message it is holding. Pick Summarize, then send or Send now above the prompt.' }
+    }
+    if (await coldOffer($, await $.clock.now())) {
       await update($, held, () => e.text)
-      return { drop: 'arne is holding your message: the cache is cold. Pick Summarize, then send or Send as is above the prompt.' }
+      return { drop: 'arne is holding your message: the cache is cold. Pick Summarize, then send or Send now above the prompt.' }
     }
     await update($, routing, () => true)
     const d = await decideMain($, e.text).finally(() => update($, routing, () => false))
@@ -1161,10 +1228,11 @@ export const register: Register = (on, options) => {
         const tier = TIER_OF[rest[0]]
         if (!tier) return { text: 'Usage: /arne pin haiku|sonnet|opus [low|medium|high|xhigh|max]' }
         if (rest[1] && !(rest[1] in EFFORT_RANK)) return { text: 'Efforts: low, medium, high, xhigh, max.' }
-        const effort = (rest[1] ?? 'medium') as Decision['effort']
+        const effort = rest[1] as Decision['effort'] | undefined
         // A pin is the person's pick made through arne: it ends a pause and moves /model (on the next tick).
-        await setPinPart($, { tier, effort })
-        return { text: `arne pinned to ${rest[0]} · ${effort}.` }
+        // No effort given: pin the model only, as the band does, so an effort already pinned stays.
+        await setPinPart($, effort ? { tier, effort } : { tier })
+        return { text: `arne pinned to ${shortModel(MODEL[tier])}${effort ? ` · ${effort}` : ''}.` }
       }
       case 'unpin':
         await setPinPart($, { tier: undefined, effort: undefined })
@@ -1245,7 +1313,7 @@ export const register: Register = (on, options) => {
         const mode = await modeOf($)
         const state = mode === 'paused' ? 'paused (you picked a model; /arne on resumes)' : mode
         return {
-          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, pin, unpin, handoff, subagents, why, log, stats, backend, debug.`,
+          text: `arne ${state}, backend ${s.backend}${s.pin ? `, pinned ${[s.pin.tier && TIER_NAME_OF[s.pin.tier], s.pin.effort].filter(Boolean).join(' · ')}` : ''}. Subcommands: on, off, settings, pin, unpin, handoff, subagents, why, log, stats, backend, debug.`,
         }
       }
     }
@@ -1256,13 +1324,14 @@ export const register: Register = (on, options) => {
   // resumed run. A pin is the main chat's, so it does not skip this.
   on('agent.spawn', async ($, e, next) => {
     const s = await settings($)
-    if (live.subagents === 'off' || !s.enabled || e.fork || e.isTeammate || e.workflow || e.resume) return next(e)
+    if (live.subagents === 'off' || !s.enabled || e.fork || e.isTeammate || e.workflow || e.resume || (await standingBy($))) return next(e)
     const now: number = await $.clock.now()
     const ceiling: Tier = TIER_OF[live.subagents] ?? 'L'
     const asked = e.model ? tierOf(e.model) : undefined
     // A model the call named runs as asked unless it is dearer than the ceiling: then the ceiling, at medium.
     if (asked && PRICE[asked] > PRICE[ceiling]) {
       const d: Decision = { tier: ceiling, effort: 'medium', reason: 'capped', source: 'capped' }
+      ownModel.set(d, MODEL[asked])
       pendingPicks.push(d)
       let r
       try {
@@ -1301,6 +1370,7 @@ export const register: Register = (on, options) => {
     const tier = [clamped, parent, ceiling].reduce((a, b) => (PRICE[b] < PRICE[a] ? b : a))
     const effort = clampEffort(r0.effort, live.effortFloor, live.effortCeiling)
     const d: Decision = { ...r0, tier, effort: (EFFORT_RANK[effort] ?? 0) < 1 ? 'medium' : effort }
+    if (e.subagentType === 'Explore') ownModel.set(d, MODEL.S)
     pendingPicks.push(d)
     let r
     try {
@@ -1404,8 +1474,16 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     await read($, liveRev) // subscribes: Settings reads `live`
     const l = await read($, last)
-    const c = await read($, cache)
     const forced = await read($, shown)
+    // Paused or off, arne sends nothing of its own: show what the app runs, never the last decision.
+    const mode = await modeOf($)
+    // Before the first turn (a new chat, a reload) no turn has said the model yet: ask the session (2).
+    const running: string | null = (await read($, sessionModel)) ?? (await Promise.resolve($.session.model()).catch(() => null)) ?? null
+    // A model with no tier (Fable): arne stands by, and the band asks once whether to stay or route.
+    const untieredAnswer = await untieredPick($)
+    const standby = !forced && mode === 'on' && running !== null && !tierOf(running) && untieredAnswer !== 'route'
+    // Standing by, the cache arne last saw belongs to another model: no cache text, no cold or heavy alert.
+    const c = standby ? null : await read($, cache)
     // The band always draws, so the pickers are there before the first request too.
     // The atom read subscribes this render to the 1s tick; the time itself comes from the clock, since the
     // tick only starts at session.start and a hot reload skips that (a frozen tick showed a stale cache state).
@@ -1424,11 +1502,11 @@ export const register: Register = (on, options) => {
     const gui = e.surface !== 'terminal'
     await syncCard($)
     const heldText = await read($, held)
-    const pin = (await settings($)).pin
+    const heldLine = (heldText ?? '').split('\n')[0]
+    const heldFirst = heldLine.length > 60 ? `${heldLine.slice(0, 59)}…` : heldLine
+    const pin =(await settings($)).pin
     const open = await read($, whyOpen) // the whyOpen atom holds "panel open"
     const picker = await read($, appPicker)
-    // Before the first turn (a new chat, a reload) no turn has said the model yet: ask the session (2).
-    const running: string | null = (await read($, sessionModel)) ?? (await Promise.resolve($.session.model()).catch(() => null)) ?? null
     // A cold chat under coldTokens is cheap to re-warm: no offer. A dismissal lasts until the cache warms again.
     const offer = await coldOffer($, now)
     const pinned = Boolean(pin?.tier || pin?.effort)
@@ -1446,6 +1524,7 @@ export const register: Register = (on, options) => {
     const priced = (label: string, p: string) => (p ? `${label} · ${p}` : label)
     const effortOn = await read($, effortless)
     const isDisabling = await read($, disabling)
+    const isOff = await read($, effortlessOff)
     // While a compact arne started runs, an alert's actions give way to this.
     const busy = (await read($, compacting)) ? <Text key="busy" dimColor>summarizing…</Text> : undefined
     const heavyGone = c ? (await read($, heavyDismissed)) === (c.warmUntil[c.model] ?? 0) : false
@@ -1457,9 +1536,9 @@ export const register: Register = (on, options) => {
       heavy: { off: false, paused: false, routing: false, model: 'claude-opus-5-5', effort: 'high', warmLeftMs: 600_000, C: 160_000 },
       normal: { off: false, paused: false, routing: false, model: 'claude-sonnet-5-5', effort: 'medium', warmLeftMs: 38 * 60_000, C: 80_000 },
     }
-    // Paused or off, arne sends nothing of its own: show what the app runs, never the last decision.
-    const mode = await modeOf($)
-    const appModel = mode === 'on' ? undefined : (running ?? undefined)
+    // Not routing (paused, off or standing by): the band shows what the app runs, with the app's own effort.
+    const routes = mode === 'on' && !standby
+    const appModel = routes ? undefined : (running ?? undefined)
     const band = forced
       ? bandText(sample[forced.state as BandState])
       : bandText({
@@ -1467,7 +1546,7 @@ export const register: Register = (on, options) => {
           paused: mode === 'paused',
           routing: await read($, routing),
           model: appModel ?? (l ? l.model : (c ? MODEL[c.model] : MODEL.M)),
-          effort: mode === 'on' ? l?.effort : ((await read($, appEffort)) ?? undefined),
+          effort: routes ? l?.effort : ((await read($, appEffort)) ?? undefined),
           warmLeftMs: left,
           C: c?.C ?? 0,
           heavyTokens: live.heavyTokens,
@@ -1480,12 +1559,13 @@ export const register: Register = (on, options) => {
       if (open) await update($, panelView, () => 'main')
       await update($, whyOpen, o => !o)
       await update($, handedOff, () => null)
+      await update($, handoffMenu, () => false)
     }
     // The model the chat really runs, when known; MODEL.M only stands in for the words.
     const realModel = appModel ?? l?.model ?? running ?? undefined
     const runModel = realModel ?? MODEL.M
     const modelWord = shortModel(runModel)
-    const effortWord = tierOf(runModel) === 'S' ? '' : ((mode === 'on' && l ? l.effort : await read($, appEffort)) ?? '')
+    const effortWord = tierOf(runModel) === 'S' ? '' : ((routes && l ? l.effort : await read($, appEffort)) ?? '')
     const effortName = effortWord ? ((narrow ? EFFORT_LABEL_SHORT : EFFORT_LABEL)[effortWord] ?? effortWord) : ''
     const lineText = realModel ? `${modelWord}${effortName ? ` · ${effortName}` : ''}` : 'Auto'
     // A decision the chat's cache holds back: the band says which model it wanted and that the switch waits.
@@ -1493,7 +1573,9 @@ export const register: Register = (on, options) => {
     const reason =
       band.state === 'routing'
         ? 'routing…'
-        : pinned
+        : standby
+          ? 'standing by'
+          : pinned
           ? 'pinned'
           : waiting
             ? `${shortModel(waiting)} fits; waiting for the cache`
@@ -1509,7 +1591,7 @@ export const register: Register = (on, options) => {
     const rest = fitRest(cols - (c ? 10 : 8), `arne  ${lineText}`, reason, [cacheText])
     // What the last turn cost: its output and cache reads at the tier's price. ponytail: leaves out uncached input.
     const lastTier = l ? tierOf(l.model) : undefined
-    const lastCost = l && lastTier ? dollars(PRICE[lastTier] * (l.out * OUT + l.cacheRead * READ)) : 0
+    const lastCost = l && lastTier ? dollars(priceAt(lastTier, c?.C ?? 0) * (l.out * OUT + l.cacheRead * READ[lastTier])) : 0
     // A segmented group: the selected segment is the raised grey (secondary), the others are plain text.
     const segment = (key: string, options: { value: string; label: string }[], active: string, pick: (v: string) => void) =>
       options.map(o =>
@@ -1611,14 +1693,39 @@ export const register: Register = (on, options) => {
       )
     // The costs table's columns: a fixed width each, so the numbers line up.
     const W = { label: narrow ? 18 : 20, now: 7, each: 12, end: 12 }
+    // Settings and Stats draw the same whether arne is on, paused or off.
+    const settingsPanel = open && view === 'settings' && (
+      <Box flexDirection="column" marginTop={1}>
+        {settingsView($, { Box, Button, Text }, gui, cols, live.backend === 'jev' && !(await typesafeKey($)))}
+      </Box>
+    )
+    const statsPanel = open && view === 'stats' && (
+      <Box flexDirection="column" marginTop={1}>
+        {await statsView($, { Box, Button, Text }, cols, gui)}
+      </Box>
+    )
+    const below = await next(e) // other mods' bands (GeminiClaude) stack under arne
     return (
       <Box flexDirection="column" rowGap={gui ? 1 : 0}>
+        {standby &&
+          !untieredAnswer &&
+          banner(
+            'alert-untiered',
+            `arne has no tier for ${shortModel(running!)}`,
+            'It stands by in this chat: no judge, no effort change, nothing logged. Or let it move the chat to Haiku, Sonnet or Opus.',
+            [
+              <Button key="untiered-stay" plain role="dismiss" label={`Stay on ${shortModel(running!)}`} onPress={() => pickUntiered($, 'stay')} />,
+              <Button key="untiered-route" variant="primary" label="Let arne route" onPress={() => pickUntiered($, 'route')} />,
+            ],
+          )}
         {effortOn &&
           banner(
             'alert-effortless',
-            'effortless is on',
-            'It sets effort too, so arne routes the model only. Disable it, then restart.',
-            isDisabling ? (
+            isOff ? 'effortless is disabled' : 'effortless is on',
+            isOff ? 'Restart Claude Code to apply.' : 'It sets effort too, so arne routes the model only. Disable it, then restart.',
+            isOff ? (
+              []
+            ) : isDisabling ? (
               <Text key="disabling" dimColor>disabling…</Text>
             ) : (
               <Button key="disable-effortless" variant="primary" label="Disable effortless" onPress={() => disableEffortless($)} />
@@ -1628,8 +1735,9 @@ export const register: Register = (on, options) => {
           banner(
             'alert-held',
             'Your message is waiting',
-            `The cache went cold, so sending now re-reads ${c ? `all ${chatK} tokens` : 'the whole chat'}.`,
+            `Holding "${heldFirst}". The cache went cold, so sending now re-reads ${c ? `all ${chatK} tokens` : 'the whole chat'}.`,
             busy ?? [
+              <Button key="held-edit" plain label="Edit" onPress={() => editHeld($)} />,
               <Button key="send-anyway" plain label={priced('Send now', price('continue'))} onPress={() => sendAnyway($)} />,
               <Button key="compact-send" variant="primary" label={priced('Summarize, then send', price('compact'))} onPress={() => compactAndSend($)} />,
             ],
@@ -1670,20 +1778,26 @@ export const register: Register = (on, options) => {
               <Button key="compact-send" variant="primary" label={`Summarize, then continue · $${dollars(costCompact(c.C, 4000, TIER_OF[live.compactModel] ?? 'S')).toFixed(2)}`} onPress={() => compactThenContinue($)} />,
             ],
           )}
-        <Box flexDirection="column" borderStyle="round" borderColor={CARD.border} paddingX={1}>
-          {mode === 'paused' ? (
-            <Box flexDirection="row" gap={1}>
-              <Text color="claude">◆</Text>
-              <Text weight="semibold">arne</Text>
-              <Text dimColor>paused · you picked {appModel ? shortModel(appModel) : 'a model'}</Text>
-              <Button key="auto" plain label="Resume" onPress={() => toggleAuto($)} />
-            </Box>
-          ) : mode === 'off' ? (
-            <Box flexDirection="row" gap={1}>
-              <Text color="claude">◆</Text>
-              <Text weight="semibold">arne</Text>
-              <Text dimColor>off</Text>
-              <Button key="auto" plain label="Turn arne on" onPress={() => toggleAuto($)} />
+        {/* The apps draw their own panel behind the band, so a card here would be a box in a box: only the terminal gets the outline. */}
+        <Box flexDirection="column" borderStyle={gui ? undefined : 'round'} borderColor={CARD.border} paddingX={1}>
+          {mode === 'paused' || mode === 'off' ? (
+            <Box flexDirection="column">
+              <Box flexDirection="row" alignItems="center" gap={1}>
+                <Text color="claude">◆</Text>
+                <Text weight="semibold">arne</Text>
+                <Text dimColor>{mode === 'paused' ? `paused · you picked ${appModel ? shortModel(appModel) : 'a model'}` : 'off'}</Text>
+                <Button key="auto" plain label={mode === 'paused' ? 'Resume' : 'Turn arne on'} onPress={() => toggleAuto($)} />
+                <Box flexGrow={1} />
+                <Button key="band" plain label={open ? '▴' : '▾'} onPress={toggle} />
+              </Box>
+              {settingsPanel}
+              {statsPanel}
+              {open && view === 'main' && (
+                <Box key="footer" flexDirection="row" columnGap={2} marginTop={1}>
+                  <Button key="gear" plain label="Settings" onPress={() => openView($, 'settings')} />
+                  <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />
+                </Box>
+              )}
             </Box>
           ) : (
             <Box flexDirection="column">
@@ -1715,16 +1829,8 @@ export const register: Register = (on, options) => {
                   </Button>
                 </Box>
               )}
-              {open && view === 'settings' && (
-                <Box flexDirection="column" marginTop={1}>
-                  {settingsView($, { Box, Button, Text }, gui, cols, live.backend === 'jev' && !(await typesafeKey($)))}
-                </Box>
-              )}
-              {open && view === 'stats' && (
-                <Box flexDirection="column" marginTop={1}>
-                  {await statsView($, { Box, Button, Text }, cols, gui)}
-                </Box>
-              )}
+              {settingsPanel}
+              {statsPanel}
               {open && view === 'main' && (
                 <Box flexDirection="column" gap={1} marginTop={1}>
                   {/* Why: the sentence with the two ratings on its right, one footnote under it. */}
@@ -1738,7 +1844,7 @@ export const register: Register = (on, options) => {
                           <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
                         </Box>
                       )}
-                      {l && !pinned && thankedKey === l.key && <Text size="footnote" dimColor>Saved for Laya's training.</Text>}
+                      {l && !pinned && thankedKey === l.key && <Text size="footnote" dimColor>Saved to arne's log.</Text>}
                     </Box>
                     {whyNote !== '' && <Text size="footnote" dimColor>{whyNote}</Text>}
                   </Box>
@@ -1808,7 +1914,13 @@ export const register: Register = (on, options) => {
                       )}
                     </Box>
                   </Box>
-                  {doneTo && <Text size="footnote" dimColor>{`Handed off to ${name(doneTo as Tier)}. Old chat saved in history; archive it from the sidebar when you are done.`}</Text>}
+                  {doneTo && (
+                    <Text size="footnote" dimColor>
+                      {live.handoff === 'clear'
+                        ? `Handed off to ${name(doneTo as Tier)}. Old chat saved in history; archive it from the sidebar when you are done.`
+                        : `Summary copied. Open a new chat on ${name(doneTo as Tier)} and paste.`}
+                    </Text>
+                  )}
                   {/* Footer: the views and Handoff… on the left, Turn off alone on the right. */}
                   <Box key="footer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1} justifyContent="space-between">
                     <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
@@ -1829,6 +1941,7 @@ export const register: Register = (on, options) => {
             </Box>
           )}
         </Box>
+        {below}
       </Box>
     )
   })

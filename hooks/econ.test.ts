@@ -6,12 +6,13 @@ const near = (got: number, want: number) => expect(Math.abs(got - want) / want <
 
 test('worked example: cold Opus chat, C = 150k, S = 4k', () => {
   near(costContinue(150_000, 'L', false), 600_000)
-  near(costCompact(150_000, 4000, 'L'), 73_000)
-  near(costContinue(150_000, 'L', true), 30_000)
+  // Haiku reads 150k at its over-100k rate (0.25): 170k × 0.25 + 4k × 2 × 2.
+  near(costCompact(150_000, 4000, 'L'), 58_500)
+  near(costContinue(150_000, 'L', true), 15_000)
   const { best, rows } = coldAdvice(150_000, 'L', {}, 0)
   const compact = rows.find(r => r.action === 'compact')!
   expect(compact.first < rows.find(r => r.action === 'continue')!.first).toBe(true)
-  near(compact.after, 800)
+  near(compact.after, 400)
   // A handoff to Haiku writes the summary to Haiku's cheaper cache, so its first request is the cheapest (17w).
   expect([best.action, best.to]).toEqual(['handoff', 'S'])
 })
@@ -21,7 +22,7 @@ test('handoff to Sonnet from a warm 150k Opus chat costs less per turn than stay
   const stay = rows.find(r => r.action === 'continue')!
   const sonnet = rows.find(r => r.action === 'handoff' && r.to === 'M')!
   expect(sonnet.after < stay.after).toBe(true)
-  near(sonnet.after, 6000 * 0.1)
+  near(sonnet.after, 6000 * 0.05)
   near(sonnet.first, costCompact(150_000, 6000, 'M'))
   expect(rows.filter(r => r.action === 'handoff').map(r => r.to).sort()).toEqual(['L', 'M', 'S'])
 })
@@ -34,10 +35,17 @@ test('paysOffAfter: $9 now and $1 a turn beats $4 and $4 after 2 turns; never pa
   expect(overTurns({ action: 'handoff', first: 9, after: 1 })).toBe(13)
 })
 
-test('warm Opus chat: compact pays back in about 3 requests', () => {
-  const perReq = costContinue(150_000, 'L', true) - 800
-  near(costCompact(150_000, 4000, 'L') / perReq, 2.5)
+test('warm Opus chat: compact pays back in about 4 requests', () => {
+  const perReq = costContinue(150_000, 'L', true) - 400
+  near(costCompact(150_000, 4000, 'L') / perReq, 4)
   expect(coldAdvice(150_000, 'L', { L: 10 }, 0).best.action).toBe('continue')
+})
+
+test('Haiku costs 5× on a prompt over 100k tokens; Sonnet and Opus read the cache at 0.05×', () => {
+  near(costContinue(100_000, 'S', false), 10_000)
+  near(costContinue(100_001, 'S', false), 50_000)
+  near(costContinue(100_000, 'M', true), 5000)
+  near(costContinue(100_000, 'S', true), 500)
 })
 
 test('routeWorth: warm 80k Opus to cold Haiku does not pay', () => {

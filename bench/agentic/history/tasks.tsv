@@ -1,0 +1,32 @@
+sha	files	lines	subject
+8185389	1	4	Settings pane sizes by its own width; segments wrap instead of clipping (step 17m)
+e458217	1	10	Config: a write finds arne's /config row by its value, not its plugin name
+9993b86	1	11	One cold Dismiss covers the heavy alert too; session start clears busy flags a reload left stuck
+2387383	1	13	Keep the cache size on an empty step; no footer status while on (17g)
+4cd8f11	1	15	Band gets the clay arne mark; model menu mismatch shows on the band, not only in the panel (step 17n)
+81e41c8	3	15	Count every failed retry; one attempt before moving up by default; 0.4.0
+2fcffb8	2	21	Retry three times on the same model before a failure moves it up
+4d3d71f	2	21	Handoff: new-chat mode by default, setting to clear instead
+bb3ef7f	5	26	Hold Opus past the ceiling after an escalation; tighten the retry detector; self-contained types
+1300c5f	2	30	Router: no keyword or length picks a tier; the judge reads every new task
+2b1cfe0	1	32	Mirror routed effort to native /effort before the prompt (step 17c)
+bce5994	1	39	Config writes find arne's own row when two arne plugins are enabled; toasts drop the doubled arne: prefix
+c709cec	1	40	Settings fits the band: Routing and Limits side by side from 90 columns
+eca00c3	2	43	App picker is an input; pins move /model at once (step 17f)
+70ea8f0	1	47	Desktop band draws styled text, not one flat button; rows centered (step 17l)
+8b2bb96	2	62	Log to one file per day per chat; Stats also reads the old decisions.jsonl
+bbaebf3	2	70	Subagent ceiling (17y): Off · Haiku · Sonnet · Opus, default Sonnet, caps named models too
+e10f013	2	70	No hold right after a compact; judge reads the last 10 messages; ratings say they train Laya (step 17v)
+a692a09	3	86	Haiku writes every compaction; cold-cache band offers costed actions
+dccae33	5	108	Jev judge (17s): TypeSafe's hosted System One as a backend next to Laya
+268d29b	4	117	Hold the cold prompt, then Compact & send it once (step 17a)
+b77a1ba	3	127	Add cache clock: per-tier warmUntil, TTL detection, band countdown, /arne debug
+52ad21e	3	147	Add settings pane and userConfig clamps (steps 11-15)
+1ff9926	2	153	Interactive band: Auto, model and effort pickers, why, cache (step 17e)
+c50e466	2	162	Minimal band and grouped settings, like Claude's own UI (step 17b)
+1550c1a	5	167	Band fits its width; context fill per tier; plain words; heavy banner (step 17i)
+8193163	1	237	Real /model before the first request; picker always matches (step 17c)
+770cd7d	1	249	Band as one pressable line with a panel under it (step 17g)
+6b75649	2	289	Every button answers on the press (step 17u)
+5de57ce	2	332	Settings and Stats move into the band's panel: one press answers; Back returns, closing resets the view, /arne settings and /arne stats open it; the panes point to the band
+7a7ff71	6	342	Five effort levels, pins skip the ceiling, Laya judge in Settings (step 17h)

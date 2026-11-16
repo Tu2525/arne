@@ -1,5 +1,5 @@
 // Run arne's judge (the real SYSTEM prompt and parseVerdict) over cases. JUDGE_MODEL picks the model (default haiku, teacher runs use sonnet);
-// JUDGE_SPLIT picks the split (default test, 'all' for every case).
+// JUDGE_SPLIT picks the split (default test, 'all' for every case). JUDGE_SYSTEM names a file whose text replaces SYSTEM, to try a wording.
 //   node --experimental-strip-types --no-warnings bench/router/judge.mjs CASES.jsonl OUT.jsonl [N] [CONCURRENCY]
 // Takes N test cases (a fixed shuffle, so reruns pick the same ones), skips ids already in OUT, appends as it goes.
 // Each line: {id, tier, effort, usd, ms, input, out}. usd is claude's total_cost_usd, the list-price cost of the call.
@@ -10,6 +10,7 @@ import { SYSTEM, parseVerdict } from '../../hooks/backends.ts'
 
 const MODEL = process.env.JUDGE_MODEL ?? 'haiku'
 const SPLIT = process.env.JUDGE_SPLIT ?? 'test'
+const SYS = process.env.JUDGE_SYSTEM ? readFileSync(process.env.JUDGE_SYSTEM, 'utf8') : SYSTEM
 const [casesFile, outFile, n = '100', conc = '4'] = process.argv.slice(2)
 const rows = (f) => readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
 const done = new Set(existsSync(outFile) ? rows(outFile).map((r) => r.id) : [])
@@ -21,7 +22,7 @@ function ask(text) {
   return new Promise((resolve) => {
     const t0 = Date.now()
     // Run from the temp dir with project settings only, so no user plugin (arne itself included) or CLAUDE.md joins the call.
-    const p = spawn('claude', ['-p', '--model', MODEL, '--system-prompt', SYSTEM, '--tools', '', '--setting-sources', 'project',
+    const p = spawn('claude', ['-p', '--model', MODEL, '--system-prompt', SYS, '--tools', '', '--setting-sources', 'project',
       '--disable-slash-commands', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json'], { cwd: tmpdir() })
     let out = ''
     p.stdout.on('data', (d) => (out += d))
@@ -39,7 +40,7 @@ await Promise.all(Array.from({ length: Number(conc) }, async () => {
     const r = await ask(c.prompt)
     const v = parseVerdict(r.result ?? '')
     // No verdict falls through arne's chain to the default, M: score it as that.
-    appendFileSync(outFile, JSON.stringify({ id: c.id, tier: v?.tier ?? 'M', effort: v?.effort ?? 'medium', fallback: !v || undefined, usd: r.total_cost_usd, ms: r.ms, input: r.usage?.input_tokens, read: r.usage?.cache_read_input_tokens, write: r.usage?.cache_creation_input_tokens, out: r.usage?.output_tokens }) + '\n')
+    appendFileSync(outFile, JSON.stringify({ id: c.id, tier: v?.tier ?? 'M', effort: v?.effort ?? 'medium', reason: v?.reason, fallback: !v || undefined, usd: r.total_cost_usd, ms: r.ms, input: r.usage?.input_tokens, read: r.usage?.cache_read_input_tokens, write: r.usage?.cache_creation_input_tokens, out: r.usage?.output_tokens }) + '\n')
   }
 }))
 console.log('done', todo.length)

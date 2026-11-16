@@ -16,7 +16,8 @@ p.stdout.on('data', (d) => {
     let j
     try { j = JSON.parse(line) } catch { continue }
     // A dropped prompt and a /model both end in a result of their own, with no model usage: not the answer.
-    if (j.type === 'result' && Object.keys(j.modelUsage ?? {}).length) { last = j; p.stdin.end() }
+    // An API error (the plan's usage limit) ends the run too: without this the session waits on stdin until the timeout.
+    if (j.type === 'result' && (Object.keys(j.modelUsage ?? {}).length || j.terminal_reason === 'api_error')) { last = j; p.stdin.end() }
   }
 })
 p.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n')

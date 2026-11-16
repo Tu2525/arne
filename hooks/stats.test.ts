@@ -7,16 +7,19 @@ const close = (got: number, want: number) => expect(Math.abs(got - want) < 1e-9)
 const row = (over: Partial<UsageRow>): UsageRow => ({ type: 'usage', at: 0, kind: 'turn', model: 'claude-haiku-5-5', input: 1000, read: 100_000, write: 0, out: 2000, ...over })
 
 test('a known usage row prices to the expected dollars on both sides (17q)', () => {
-  // 1000 in + 100k read × 0.1 + 2000 out × 5 = 21k input units; × $3/M on Sonnet, × 2 on Opus, ÷ 3 on Haiku.
+  // 1000 in + 100k read × 0.05 + 2000 out × 5 = 16k input units; × $2/M on Sonnet, × 2 on Opus.
+  // Haiku reads at 0.1× (21k units) and the prompt is past 100k, so × 0.25; under 100k it is × 0.05.
   const r = row({})
-  close(priceOn(r, 'M'), 0.063)
-  close(priceOn(r, 'L'), 0.126)
-  close(priceOn(r, 'S'), 0.021)
+  close(priceOn(r, 'M'), 0.032)
+  close(priceOn(r, 'L'), 0.064)
+  close(priceOn(r, 'S'), 0.0105)
+  close(priceOn(row({ read: 50_000 }), 'S'), 0.0016)
   const s = summarize([r], 0)
-  close(s.spent, 0.021)
-  close(s.opus, 0.126)
-  expect(savedText(s.spent, s.opus)).toEqual({ headline: 'Saved $0.10', sub: '83% less than $0.13' })
+  close(s.spent, 0.0105)
+  close(s.opus, 0.064)
+  expect(savedText(s.spent, s.opus)).toEqual({ headline: 'Saved $0.05', sub: '84% less than $0.06' })
   expect(savedText(0.2, 0.1).headline).toBe('$0.10 more')
+  expect(savedText(0.103, 0.1).headline).toBe('Saved $0.00')
 })
 
 test('a switch and a summary count against arne, in their own line (17q)', () => {
@@ -53,4 +56,38 @@ test('a row without usage is skipped, not guessed (17q)', () => {
   const rows = parseUsage(text)
   expect(rows.length).toBe(1)
   expect(rows[0]!.model).toBe('claude-sonnet-5-5')
+})
+
+test('a pinned turn is priced on the pinned model in both baselines; the turn after a routed prompt is not', () => {
+  const dec = (source: string, key = 'm1') => JSON.stringify({ key, model: 'claude-opus-5-5', effort: 'high', reason: source, source, out: 0, cacheRead: 0, text: 'x' })
+  const opus = JSON.stringify(row({ model: 'claude-opus-5-5' }))
+  const text = [
+    dec('pin'),
+    dec('haiku', 'agent:a1'), // a subagent's decision between the prompt and its turn changes nothing
+    JSON.stringify({ type: 'feedback', key: 'm0', verdict: 'good', source: 'haiku' }),
+    opus, // pinned
+    opus, // no decision of its own: not pinned
+    dec('escalate'),
+    opus, // arne's pick
+  ].join('\n')
+  const rows = parseUsage(text)
+  expect(rows.map(r => r.own)).toEqual(['claude-opus-5-5', undefined, undefined])
+  const s = summarize(rows, 0)
+  const r = rows[1]!
+  close(s.spent, 3 * priceOn(r, 'L'))
+  close(s.opus, 3 * priceOn(r, 'L'))
+  close(s.sonnet, priceOn(r, 'L') + 2 * priceOn(r, 'M'))
+})
+
+test('the judge counts against arne, and a subagent with its own model keeps it in both baselines', () => {
+  const turn = row({})
+  const judge = row({ kind: 'judge', read: 0, input: 3000, out: 20 })
+  const explore = row({ kind: 'agent', own: 'claude-haiku-5-5' })
+  const s = summarize([turn, judge, explore], 0)
+  // Explore runs on Haiku with or without arne: it adds the same dollars to every side.
+  close(s.opus, priceOn(turn, 'L') + priceOn(explore, 'S'))
+  close(s.sonnet, priceOn(turn, 'M') + priceOn(explore, 'S'))
+  close(s.spent, priceOn(turn, 'S') + priceOn(judge, 'S') + priceOn(explore, 'S'))
+  expect(s.lines.find(l => l.label === 'Haiku judge')!.count).toBe(1)
+  expect(s.turns).toBe(2)
 })

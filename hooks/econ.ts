@@ -1,20 +1,26 @@
 // Pure cost model, in units of one Sonnet uncached input token.
-// Ratios from effortless 1.71.0 (MIT, HeyCubit): MODEL_PRICE, WEIGHT and the measured 1h cache write.
+// List prices per million input tokens (2026-11): Haiku 5.5 $0.10, Sonnet 5.5 $2, Opus 5.5 $4. Output is 5× input on each.
+// The 1h cache write ratio is from effortless 1.71.0 (MIT, HeyCubit), measured.
 import type { Tier } from './route'
 
-export const PRICE: Record<Tier, number> = { S: 1 / 3, M: 1, L: 2 }
-export const READ = 0.1 // cache read, × input price
+/** Base input price per tier. Use it to rank tiers; use `priceAt` for a cost. */
+export const PRICE: Record<Tier, number> = { S: 0.05, M: 1, L: 2 }
+/** Haiku 5.5 costs 5× ($0.50 in, $2.50 out) on a prompt over 100k tokens. ponytail: assumes the whole request moves to that rate, not just the tokens past 100k. */
+export const HAIKU_STEP = 100_000
+export const priceAt = (t: Tier, prompt: number) => (t === 'S' && prompt > HAIKU_STEP ? PRICE.S * 5 : PRICE[t])
+/** Cache read, × input price: $0.10 on Sonnet and $0.20 on Opus are 0.05×. ponytail: Haiku's read price is not published apart from the usual 0.1×. */
+export const READ: Record<Tier, number> = { S: 0.1, M: 0.05, L: 0.05 }
 export const WRITE = 2 // Claude Code writes the 1h cache: 2× input price (measured)
 export const OUT = 5 // output, × input price
 
 /** First request of the next prompt when staying on `m`: a read when warm, a full re-write when cold. */
-export const costContinue = (C: number, m: Tier, warm: boolean) => C * PRICE[m] * (warm ? READ : WRITE)
+export const costContinue = (C: number, m: Tier, warm: boolean) => C * priceAt(m, C) * (warm ? READ[m] : WRITE)
 
 /** First request after moving to `to`. */
 export const costSwitch = (C: number, to: Tier, warmTo: boolean) => costContinue(C, to, warmTo)
 
 /** Haiku reads the chat once (uncached), writes summary S, then `m` writes S to its cache. */
-export const costCompact = (C: number, S: number, m: Tier) => C * PRICE.S + OUT * S * PRICE.S + WRITE * S * PRICE[m]
+export const costCompact = (C: number, S: number, m: Tier) => (C + OUT * S) * priceAt('S', C) + WRITE * S * priceAt(m, S)
 
 /** Whether moving one prompt from `inUse` to `to` is cheaper than staying (effortless's routeWorth). */
 export function routeWorth(to: Tier, inUse: Tier, C: number, warm: { to: boolean; inUse: boolean }): boolean {
@@ -39,13 +45,13 @@ export function coldAdvice(
 ): { best: Row; rows: Row[] } {
   const warm = (t: Tier) => (warmUntil[t] ?? 0) > now
   const rows: Row[] = [
-    { action: 'continue', first: costContinue(C, m, warm(m)), after: C * PRICE[m] * READ },
+    { action: 'continue', first: costContinue(C, m, warm(m)), after: costContinue(C, m, true) },
     ...(['S', 'M', 'L'] as Tier[])
       .filter(t => t !== m && PRICE[t] < PRICE[m])
-      .map(t => ({ action: 'switch' as const, to: t, first: costSwitch(C, t, warm(t)), after: C * PRICE[t] * READ })),
-    { action: 'compact', first: costCompact(C, S, m), after: S * PRICE[m] * READ },
+      .map(t => ({ action: 'switch' as const, to: t, first: costSwitch(C, t, warm(t)), after: costContinue(C, t, true) })),
+    { action: 'compact', first: costCompact(C, S, m), after: costContinue(S, m, true) },
     // One per tier: Haiku reads the chat, and the new chat on `t` starts from the summary and the doc, cold.
-    ...(['S', 'M', 'L'] as Tier[]).map(t => ({ action: 'handoff' as const, to: t, first: costCompact(C, S + doc, t), after: (S + doc) * PRICE[t] * READ })),
+    ...(['S', 'M', 'L'] as Tier[]).map(t => ({ action: 'handoff' as const, to: t, first: costCompact(C, S + doc, t), after: costContinue(S + doc, t, true) })),
   ]
   rows.sort((a, b) => a.first - b.first)
   return { best: rows[0], rows }
@@ -60,8 +66,8 @@ export function paysOffAfter(row: Row, stay: Row, max = 20): number | undefined 
 /** What a row costs over this turn and the next `turns - 1`: the "best" tag goes to the cheapest. */
 export const overTurns = (row: Row, turns = 5) => row.first + (turns - 1) * row.after
 
-/** Units to dollars: Sonnet 5.5 input is $3 per million tokens. ponytail: fixed rate, read real prices if they change. */
-export const dollars = (units: number) => (units * 3) / 1e6
+/** Units to dollars: Sonnet 5.5 input is $2 per million tokens. ponytail: fixed rate, read real prices if they change. */
+export const dollars = (units: number) => (units * 2) / 1e6
 
 // --- Cache clock helpers (ported from effortless cacheTtlOf / mostlyCached) ---
 
@@ -172,7 +178,7 @@ export type BandInput = {
   heavyTokens?: number
 }
 
-// ponytail: fable is named for the band only; it has no tier, so arne neither routes nor prices a Fable chat. Add a tier if that changes.
+// ponytail: fable is named for the band only; it has no tier, so arne stands by in a Fable chat (register.tsx standingBy) and prices none of it. Add a tier if that changes.
 const SHORT: Record<string, string> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable' }
 const EFFORT_SHORT: Record<string, string> = { low: 'low', medium: 'med', high: 'high', xhigh: 'xhi', max: 'max' }
 export const shortModel = (model: string) => SHORT[(/haiku|sonnet|opus|fable/.exec(model)?.[0] ?? '')] ?? model

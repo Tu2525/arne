@@ -11,12 +11,14 @@ function engine(on: any, start = 'claude-opus-5-5') {
     usage: null as unknown,
     statuses: [] as string[],
     toasts: [] as string[],
+    modelFails: 0, // set it to n and the next n session.model calls reject
     deny: undefined as string | undefined, // set it and every config write is refused
     compactGate: undefined as Promise<void> | undefined, // set it and /compact waits for it
     // Set it ('arne@x') and rows are keyed as with two arne plugins enabled: `arne.<field>` names no row.
     rowPrefix: undefined as string | undefined,
     rows: [] as { key: string; provider: { plugin: string } }[],
     writes: [] as string[],
+    copyFails: false, // set it and the clipboard copy rejects
   }
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on)
@@ -34,10 +36,20 @@ function engine(on: any, start = 'claude-opus-5-5') {
     s.writes.push(e.key)
     return { value: e.value }
   })
+  on('ui.copy', () => {
+    if (s.copyFails) throw new Error('no clipboard')
+    return { value: { isCopied: true } }
+  })
   on('config.list', () => ({ value: s.rows }))
   on('classic.PostModelSwitch', () => ({}))
   on('classic.PostCompact', () => ({}))
-  on('session.model', () => ({ value: s.model }))
+  on('session.model', () => {
+    if (s.modelFails > 0) {
+      s.modelFails--
+      throw new Error('session gone')
+    }
+    return { value: s.model }
+  })
   on('prompt.submit', (_$: unknown, e: { text: string }) => {
     s.entered.push(e.text)
     return { text: e.text }
@@ -99,7 +111,17 @@ test('an effort change is silent: no /effort typed, the prompt is not dropped (1
   expect(s.ran).toEqual([])
 })
 
-test('a cold, big chat holds the prompt; Send as is sends it once, however often it is pressed (17a)', async ($: any, on: any) => {
+// A chat that is big and cold, so the next prompt is held.
+async function coldChat(s: any, clock: any, $: any) {
+  s.usage = { input_tokens: 50_000 }
+  for await (const _ of $.turn.step({ turnId: 't0', index: 0, model: s.model, effort: 'medium', messageCount: 1 })) {
+    // drain
+  }
+  await clock.advance(2 * 60 * 60_000)
+}
+const mountBand = ($: any) => $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 24 } })
+
+test('a cold, big chat holds the prompt; Send now sends it once, however often it is pressed (17a)', async ($: any, on: any) => {
   const { s, clock } = engine(on)
   on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
   // One 50k-token answer on Opus, then two hours: the cache is cold and the chat is past coldTokens.
@@ -124,6 +146,58 @@ test('a cold, big chat holds the prompt; Send as is sends it once, however often
   expect(s.entered).toEqual(['what is a mutex'])
   // Released on a cold chat, it is a cache boundary: the real /model moved before it went.
   expect(s.ran).toEqual(['/model claude-haiku-5-5'])
+})
+
+test('Edit puts the held message back in the prompt box and sends nothing', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  const filled: string[] = []
+  on('prompt.fill', (_$: unknown, e: { text: string }) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
+  await coldChat(s, clock, $)
+  await $.prompt.submit(typed('what is a mutex'))
+  await mountBand($)
+  await $.ui.press({ plugin: 'arne', key: 'held-edit' })
+  for (let i = 0; i < 5; i++) await clock.settle()
+  expect(filled).toEqual(['what is a mutex'])
+  await $.ui.press({ plugin: 'arne', key: 'send-anyway' }).catch(() => undefined) // nothing held any more
+  for (let i = 0; i < 5; i++) await clock.settle()
+  expect(s.entered).toEqual([])
+})
+
+test('a second prompt while one is held joins it, and both go once, in order', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
+  await coldChat(s, clock, $)
+  await $.prompt.submit(typed('first'))
+  const r = await $.prompt.submit(typed('second'))
+  expect('drop' in r && String(r.drop)).toContain('added this')
+  expect(s.entered).toEqual([])
+  await mountBand($)
+  await $.ui.press({ plugin: 'arne', key: 'send-anyway' })
+  for (let i = 0; i < 5; i++) await clock.settle()
+  expect(s.entered).toEqual(['first\n\nsecond'])
+})
+
+test('if routing fails after Send now, the message is back in the prompt box and not sent', async ($: any, on: any) => {
+  const { s, clock } = engine(on)
+  const filled: string[] = []
+  on('prompt.fill', (_$: unknown, e: { text: string }) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+  on('model.complete', () => ({ value: { text: '{"tier":"S","effort":"low","reason":"a lookup"}', isAnswered: true } }))
+  await coldChat(s, clock, $)
+  await $.prompt.submit(typed('what is a mutex'))
+  await mountBand($)
+  s.modelFails = 1
+  await $.ui.press({ plugin: 'arne', key: 'send-anyway' })
+  for (let i = 0; i < 5; i++) await clock.settle()
+  expect(s.entered).toEqual([])
+  expect(filled).toEqual(['what is a mutex'])
+  expect(s.toasts.some((t) => t.includes('back in the prompt box'))).toBe(true)
 })
 
 test('a model the person picks pauses arne, and every surface says so (17d)', async ($: any, on: any) => {
@@ -172,7 +246,32 @@ test('a pick in the app picker pins that tier instead of pausing, and band Auto 
   expect((await $.command.run({ command: 'arne', args: '' })).text).not.toContain('pinned')
 })
 
-test('a pin of xhigh passes the default ceiling and is kept (17h)', async ($: any, on: any) => {
+test('/arne pin with no effort pins the model only, like the band, and keeps an effort already pinned', async ($: any, on: any) => {
+  const { clock } = engine(on)
+  expect((await $.command.run({ command: 'arne', args: 'pin opus' })).text).toBe('arne pinned to Opus.')
+  for (let i = 0; i < 3; i++) await clock.settle()
+  const status = (await $.command.run({ command: 'arne', args: '' })).text
+  expect(status).toContain('pinned opus')
+  expect(status).not.toContain('pinned opus ·')
+  expect((await $.command.run({ command: 'arne', args: 'pin opus high' })).text).toBe('arne pinned to Opus · high.')
+  await $.command.run({ command: 'arne', args: 'pin haiku' })
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('pinned haiku · high')
+})
+
+test('/arne names settings in its subcommand list', async ($: any, on: any) => {
+  engine(on)
+  expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('Subcommands: on, off, settings, pin,')
+})
+
+test('the compaction summary names the model that wrote it', async ($: any, on: any) => {
+  engine(on)
+  on('model.complete', () => ({ value: { text: 'the gist', isAnswered: true } }))
+  const messages = [1, 2, 3, 4].map(i => ({ role: 'user', text: `m${i}`, toolUses: [] }))
+  const r = await $.session.compact({ trigger: 'manual', messages })
+  expect(r.messages[0].text).toContain('(written by Haiku for arne)')
+})
+
+test('a pin of xhigh passes the default ceiling and is kept (17h)',async ($: any, on: any) => {
   const { s, clock } = engine(on)
   await $.command.run({ command: 'arne', args: 'pin opus xhigh' })
   for (let i = 0; i < 3; i++) await clock.settle()
@@ -190,11 +289,11 @@ test('the Judge row set to Laya sets backend laya, and Settings says what Laya i
   expect((await $.command.run({ command: 'arne', args: '' })).text).toContain('backend laya')
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 80, rows: 30 } })
   await $.command.run({ command: 'arne', args: 'settings' })
-  expect(await pane.find({ type: 'Text', text: 'Laya runs on this machine and learns from your ratings.' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Laya runs on this machine.' })).toBeDefined()
   // The Jev note takes the Laya note's place while Jev is the judge.
   expect(await pane.find({ type: 'Text', text: /^Jev is hosted/ }).catch(() => undefined)).toBeUndefined()
   await $.config.set({ key: 'arne.backend', value: 'jev' })
-  expect(await pane.find({ type: 'Text', text: 'Jev is hosted: your prompts leave this machine.' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: "Jev is hosted: your prompt, recent messages, file paths and the chat's size leave this machine." })).toBeDefined()
 })
 
 test('a pin from the band or /arne pin moves /model at once, before any prompt (17f)', async ($: any, on: any) => {
@@ -465,12 +564,12 @@ test('a finished turn logs its usage, and Stats and /arne stats show the estimat
   expect([...disk.values()].join('')).toContain('"type":"usage"')
   const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 40 } })
   const text = (await $.command.run({ command: 'arne', args: 'stats' })).text
-  expect(await pane.find({ type: 'Text', text: 'Saved $0.10' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '83% less than $0.13' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '$0.01' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '84% less than $0.06 on Opus · medium' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: 'Haiku' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: /^An estimate/ })).toBeDefined()
   expect(text).toContain('estimate')
-  expect(text).toContain('Today: $0.02 spent over 1 turns')
+  expect(text).toContain('Today: $0.01 spent over 1 turns')
 })
 
 // --- 17u: every button answers on the press ---
@@ -938,6 +1037,20 @@ test('the costs table has fixed-width columns, a dim header, and the one Hand of
   expect(await band.find({ key: 'handoff-menu' }).catch(() => undefined)).toBeUndefined()
 })
 
+test('Stats shows one With arne headline with a line per baseline, not two competing tiles', async ($: any, on: any) => {
+  engine(on, 'claude-haiku-5-5')
+  memDisk(on)
+  on('turn.complete', (_$: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  const usage = { model: 'claude-haiku-5-5', input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 0 }
+  await $.turn.complete({ turnId: 's1', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, usage })
+  const pane = await $.ui.mount({ plugin: 'arne', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 80 }, viewport: { columns: 80, rows: 40 } })
+  await $.command.run({ command: 'arne', args: 'stats' })
+  expect(await pane.find({ type: 'Text', text: /^84% less than \$0\.06 on Opus · medium$/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /less than \$[\d.]+ on Sonnet · medium$/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^Saved / }).catch(() => undefined)).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /^Against / }).catch(() => undefined)).toBeUndefined()
+})
+
 test('Subagents reads its ceiling in Settings, not in the panel; no Esc hint, since no key closes the band (fixes 2, 3)', async ($: any, on: any) => {
   engine(on, 'claude-sonnet-5-5')
   const band = await $.ui.mount(band100)
@@ -981,7 +1094,7 @@ test('an alert puts dismiss first and its primary last, with the price it spends
 
   await $.prompt.submit(typed('what is a mutex')) // held on the cold chat
   const heldActions = (await band.find({ key: 'alert-held-actions' })).children
-  expect(heldActions.map((b: any) => b.props.label)).toEqual([expect.stringMatching(/^Send now · \$/), expect.stringMatching(/^Summarize, then send · \$/)])
+  expect(heldActions.map((b: any) => b.props.label)).toEqual(['Edit', expect.stringMatching(/^Send now · \$/), expect.stringMatching(/^Summarize, then send · \$/)])
   expect(heldActions.at(-1).props.variant).toBe('primary')
   expect(await band.find({ type: 'Text', text: 'Your message is waiting' })).toBeDefined()
 })
@@ -1191,8 +1304,8 @@ test('Stats sums the day files and the legacy decisions.jsonl, and never writes 
   await done('t2')
   expect([...disk.keys()].filter(k => k.startsWith(LOG)).length).toBe(2)
   const text = (await $.command.run({ command: 'arne', args: 'stats' })).text
-  expect(text).toContain('All time: $0.06 spent over 3 turns')
-  expect(text).toContain('Today: $0.02 spent over 1 turns')
+  expect(text).toContain('All time: $0.03 spent over 3 turns')
+  expect(text).toContain('Today: $0.01 spent over 1 turns')
   expect(disk.get('/home/t/.claude/arne/decisions.jsonl')).toBe(legacy)
 })
 
@@ -1226,4 +1339,109 @@ test('routing state is an atom: "continue" after a settings change (a reload) ke
   await $.config.set({ key: 'arne.coldTokens', value: 40_000 })
   await send('continue')
   expect(s.ran).toEqual(['/model claude-haiku-5-5', '/model claude-opus-5-5'])
+})
+
+test('on a model with no tier (Fable) arne stands by; the band asks once, and "Let arne route" moves the chat', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-fable-5-2')
+  const disk = memDisk(on)
+  let judged = 0
+  on('model.complete', () => {
+    judged++
+    return { value: { text: '{"tier":"M","effort":"high","reason":"a design question"}', isAnswered: true } }
+  })
+  on('turn.start', (_$: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+
+  // Standing by: the prompt goes through, no judge is asked, the request keeps its effort, nothing is logged.
+  const r = await $.prompt.submit(typed('design a cache'))
+  expect('drop' in r && r.drop !== undefined).toBe(false)
+  await $.turn.start({ text: 'design a cache', turnId: 'f1' })
+  for await (const _ of $.turn.step({ turnId: 'f1', index: 0, model: s.model, effort: 'xhigh', messageCount: 1 })) {
+    // drain
+  }
+  await $.turn.complete({ turnId: 'f1', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, usage: { model: 'claude-haiku-5-5', input_tokens: 10, output_tokens: 10 }, agentId: 'a1' })
+  await clock.settle()
+  expect(judged).toBe(0)
+  expect(s.efforts).toEqual(['xhigh'])
+  expect(s.ran).toEqual([])
+  expect([...disk.values()].join('')).toBe('')
+
+  const band = await $.ui.mount(band80)
+  expect(await band.find({ type: 'Text', text: 'arne has no tier for Fable' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'standing by' })).toBeDefined()
+  await band.press({ key: 'untiered-route' })
+  await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'arne has no tier for Fable' }).catch(() => undefined)).toBeUndefined()
+
+  // Routing now: the judge is asked and the chat leaves Fable for the tier it picked.
+  const r2 = await $.prompt.submit(typed('design a cache'))
+  expect('drop' in r2 && r2.drop !== undefined).toBe(true)
+  await clock.settle()
+  expect(judged).toBe(1)
+  expect(s.ran).toEqual(['/model claude-sonnet-5-5'])
+})
+
+test('"Stay on Fable" ends the question and arne keeps standing by', async ($: any, on: any) => {
+  const { s, clock } = engine(on, 'claude-fable-5-2')
+  const band = await $.ui.mount(band80)
+  await band.press({ key: 'untiered-stay' })
+  await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'arne has no tier for Fable' }).catch(() => undefined)).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: 'standing by' })).toBeDefined()
+  const r = await $.prompt.submit(typed('design a cache'))
+  expect('drop' in r && r.drop !== undefined).toBe(false)
+  expect(s.ran).toEqual([])
+})
+
+// --- Band fixes: panel while paused or off, handoff truth, double feedback ---
+
+test('paused and off: the chevron opens a panel with Settings and Stats; Settings opens', async ($: any, on: any) => {
+  engine(on, 'claude-sonnet-5-5')
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', () => ({ value: '' }))
+  for (const go of [
+    () => $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-opus-5-5', requested_model: 'opus', source: 'picker' }),
+    () => $.command.run({ command: 'arne', args: 'off' }),
+  ]) {
+    await go()
+    const band = await $.ui.mount(band100)
+    expect(await band.find({ key: 'auto' })).toBeDefined()
+    expect(await band.find({ key: 'gear' }).catch(() => undefined)).toBeUndefined()
+    await band.press({ key: 'band' })
+    expect(await band.find({ key: 'open-stats' }), 'stats').toBeDefined()
+    expect(await band.find({ type: 'Text', text: 'No decision yet.' }).catch(() => undefined)).toBeUndefined()
+    await band.press({ key: 'gear' })
+    expect(await band.find({ type: 'Text', text: 'Routing' }), 'routing').toBeDefined()
+    expect(await band.find({ key: 'back' }), 'back').toBeDefined()
+    await band.press({ key: 'band' }) // close, so the next mode starts shut
+    await $.command.run({ command: 'arne', args: 'on' })
+  }
+})
+
+test('a rejected copy says the summary was not copied, not that it is on the clipboard', async ($: any, on: any) => {
+  const { s, clock } = await stickyOpus($, on)
+  s.copyFails = true
+  await $.command.run({ command: 'arne', args: 'handoff haiku' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(s.toasts.at(-1)).toContain('not copied')
+  expect(s.toasts.at(-1)).not.toContain('on your clipboard')
+  expect(s.toasts.at(-1)).toContain('arne-handoff.md') // the file was written
+})
+
+test('New chat handoff: the panel says the summary was copied, not that the chat was handed off', async ($: any, on: any) => {
+  const { clock } = await stickyOpus($, on)
+  const band = await $.ui.mount(band100)
+  await band.press({ key: 'band' }) // opening clears the note, so open first
+  await $.command.run({ command: 'arne', args: 'handoff haiku' })
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect(await band.find({ type: 'Text', text: 'Summary copied. Open a new chat on Haiku and paste.' })).toBeDefined()
+})
+
+test('two quick presses on Good call write one feedback row', async ($: any, on: any) => {
+  const { clock, disk } = await stickyOpus($, on)
+  const band = await $.ui.mount(band100)
+  await band.press({ key: 'band' })
+  await Promise.all([band.press({ key: 'up' }), band.press({ key: 'up' }).catch(() => undefined)])
+  for (let i = 0; i < 3; i++) await clock.settle()
+  expect([...disk.values()].join('').split('"type":"feedback"').length - 1).toBe(1)
 })

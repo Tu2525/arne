@@ -1,0 +1,22 @@
+# Dropped 2026-11-15: neither Haiku nor Sonnet passes (one run each), both failing the same hidden test.
+# The prompt names what the test compares but not the expected values, so the task is unpassable as prompted.
+sha	files	lines	subject
+9c4b9ee	1	6	Router: a long prompt goes to the judge, not to Opus by length; wider /config row match
+9200c84	2	12	Judge stops at Sonnet; only a failed attempt goes on to Opus; subagents capped at Sonnet
+eb66912	1	20	Cost rows on one line with best and the Handoff button held right; Subagents reads On/Off in Settings too; no Esc hint, since no key closes the band
+b32f1d2	1	32	Handoff beside Compact: Haiku summary saved to arne-handoff.md and copied for a new chat (step 17o)
+f3a070f	2	33	Keep routing state in an atom so a settings change does not wipe it; prune planned and agents
+4d4c976	2	43	Ask for the TypeSafe key when Jev is picked: a sensitive /config field, and Add key… in Settings
+568733e	1	44	Band says auto · model (routed) on an Auto pick; effort set silently in turn.step; heavy banner compacts then continues; judge reads CLAUDE.md or README
+6ff607d	2	57	Add econ.ts cost model; send no effort to Haiku
+40dceb7	2	60	Escalate one tier after a failed attempt, hold it for two turns
+a156d12	1	93	UI audit fixes: selected-state marker, aligned Settings rows, clearer cost card, label tweaks; redraw demo
+4df0b30	2	99	Switch the real /model at cache boundaries; stay sticky while warm
+a870ac1	2	101	Band and panel: running model at rest, no picked note before a decision, one Handoff in the costs table, compact ratings with the Laya line once a chat, New chat on its own tier, Subagents On/Off segment, bare notes when narrow
+075a13e	3	102	Band indicator states, status line, /arne show
+c6ced3f	2	110	Judge reads the chat, pins are per chat and pin both parts, cold alert only when cold and worth it (step 17p)
+2301108	3	116	Subagents get their model at spawn: never dearer than the chat, asked-for models and forks left alone, a notice when arne moves one, panel count and Route subagents switch (step 17x)
+73bda5b	3	129	One arne state for every surface; no self-pause (step 17d)
+6a67668	3	177	Price stay, switch or handoff when a switch does not pay; handoffs you start: summary, /clear, the tier's /model, summary sent (step 17w)
+dfb1571	3	246	Stats: what arne saved against Opus and Sonnet at medium, from logged usage; Settings link and /arne stats (step 17q)
+32fd8e2	3	473	Band redesign: dim secondary text, a quiet resting line, alerts in macOS order, Settings and Stats with ‹ Back
