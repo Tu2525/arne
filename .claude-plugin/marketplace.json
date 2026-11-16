@@ -7,7 +7,7 @@
       "name": "arne",
       "source": "./",
       "description": "Routes each prompt and subagent run to the cheapest model and effort that can handle it.",
-      "version": "0.4.4"
+      "version": "0.4.5"
     }
   ]
 }
