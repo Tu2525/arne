@@ -387,6 +387,8 @@ test('on the desktop the resting line is styled Text and the chevron alone is th
   await band.press({ key: 'band' })
   for (let i = 0; i < 2; i++) await clock.settle()
   expect(await band.find({ type: 'Button', text: 'Extra high' })).toBeDefined()
+  // The apps draw Lucide icons beside the panel's controls; the terminal's table has no Svg.
+  expect(await band.find({ type: 'Svg' })).toBeDefined()
 })
 
 test('a narrow settings pane takes its width from bodyColumns and shows the short effort names (17m)', async ($: any, on: any) => {

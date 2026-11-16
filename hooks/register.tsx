@@ -165,6 +165,48 @@ async function syncCard($: any) {
   if (String(row.value).startsWith('dark')) CARD = { border: '#4d4d4c' }
 }
 
+// --- Icons ---
+// Lucide (ISC, lucide.dev): each icon's inner markup on its 24px grid. Only the apps have Svg, so the
+// terminal draws none. An Svg is drawn as an image, off the page, so it takes no ThemeKey and no
+// currentColor: the stroke is one grey that reads on the light and the dark theme both.
+const LUCIDE = {
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  stats: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>', // chart-column
+  alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>', // triangle-alert
+  route: '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
+  limits: '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>', // sliders-horizontal
+  power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
+  handoff: '<path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/>', // arrow-right-left
+  up: '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>', // thumbs-up
+  down: '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>', // thumbs-down
+} as const
+type IconName = keyof typeof LUCIDE
+const ICON_GREY = '#8c8b86' // 3.4:1 on white, 4.4:1 on the dark card
+const ICON_WARN = '#d97706'
+const ICON_PX = 14
+
+// `el` is the band's element table, its Svg left out on the terminal. Decorative: the text beside it says the same, so no alt.
+function icon(el: any, name: IconName, color = ICON_GREY) {
+  const { Svg } = el
+  if (!Svg) return undefined
+  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_PX}" height="${ICON_PX}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${LUCIDE[name]}</svg>`
+  return <Svg source={source} alt="" width={ICON_PX} height={ICON_PX} />
+}
+
+// An icon on one line with the control or caption it stands for. The terminal gets the node alone.
+// A Button takes only text inside it, so the icon sits beside the Button, not in it.
+function withIcon(el: any, name: IconName, node: unknown, color?: string) {
+  const i = icon(el, name, color)
+  if (!i) return node as any
+  const { Box } = el
+  return (
+    <Box flexDirection="row" alignItems="center" gap={1}>
+      {i}
+      {node as any}
+    </Box>
+  )
+}
+
 // --- Handoff (17o, 17w) ---
 // Haiku summarizes the chat into arne-handoff.md and the clipboard. Setting Handoff = newchat (default): a
 // toast asks the person to open a new chat on `tier` and paste; no plugin call opens a chat or pastes into
@@ -846,10 +888,12 @@ async function openView($: any, view: View) {
 }
 
 // A view's header: "‹ Back" to the main panel, then the view's title.
-function viewHead($: any, { Box, Button, Text }: any, title: string) {
+function viewHead($: any, el: any, title: string, iconName: IconName) {
+  const { Box, Button, Text } = el
   return (
     <Box key="view-head" flexDirection="row" alignItems="center" gap={1}>
       <Button key="back" plain label="‹ Back" onPress={() => update($, panelView, () => 'main')} />
+      {icon(el, iconName)}
       <Text weight="semibold">{title}</Text>
     </Box>
   )
@@ -861,7 +905,8 @@ const SETTINGS_LABEL_W = 16 // "Strongest model" is the longest label
 
 // The panel's Settings view: a label and a segmented control per row. A press shows the new value at
 // once, then writes it through $.config.set (setOption), so the panel and /config never disagree.
-function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: number, needsKey = false) {
+function settingsView($: any, el: any, gui: boolean, cols: number, needsKey = false) {
+  const { Box, Button, Text } = el
   // Every row is the same: the label in a fixed column, the options beside it. A row with many options
   // wraps under its own first option, never to the far edge.
   const choice = (label: unknown, key: keyof Live, options: { value: unknown; label: string }[]) => {
@@ -884,9 +929,9 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
     )
   }
   // Each group: a caption over a bordered card of rows, as in the design's inset lists.
-  const card = (title: string, rows: unknown[], note?: unknown) => (
+  const card = (title: string, iconName: IconName, rows: unknown[], note?: unknown) => (
     <Box key={`card-${title}`} flexDirection="column" flexGrow={1}>
-      <Text size="footnote" dimColor>{title}</Text>
+      {withIcon(el, iconName, <Text size="footnote" dimColor>{title}</Text>)}
       <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor={CARD.border} paddingX={1} rowGap={gui ? 1 : 0}>
         {rows as any}
       </Box>
@@ -899,10 +944,10 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
   const EFFORTS = (['low', 'medium', 'high', 'xhigh', 'max'] as const).map(v => ({ value: v, label: effortNames[v] ?? v }))
   return (
     <Box key="settings-view" flexDirection="column" gap={1}>
-      {viewHead($, { Box, Button, Text }, 'Settings')}
+      {viewHead($, el, 'Settings', 'settings')}
       {/* The band is at most half the window and scrolls past that: from 90 columns the cards sit side by side. */}
       <Box key="settings-cards" flexDirection={cols >= 90 ? 'row' : 'column'} gap={cols >= 90 ? 2 : 1}>
-        {card('Routing', [
+        {card('Routing', 'route', [
           choice('Auto routing', 'auto', [{ value: true, label: 'On' }, { value: false, label: 'Off' }]),
           choice('Judge', 'backend', [
             { value: 'heuristic', label: 'Rules' },
@@ -935,7 +980,7 @@ function settingsView($: any, { Box, Button, Text }: any, gui: boolean, cols: nu
             )}
           </Box>
         ))}
-        {card('Limits', [
+        {card('Limits', 'limits', [
           choice('Cheapest model', 'modelFloor', MODELS),
           choice('Strongest model', 'modelCeiling', MODELS),
           choice('Lowest effort', 'effortFloor', EFFORTS),
@@ -954,7 +999,8 @@ const STATS_EMPTY: Record<Period, string> = { today: 'No turns today yet.', week
 
 // The panel's Stats view (17q): what arne saved against running every turn on Opus, or on Sonnet, at medium.
 // An estimate, said so. Back returns to the main panel.
-async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: boolean) {
+async function statsView($: any, el: any, cols: number, gui: boolean) {
+  const { Box, Button, Text } = el
   const period = (await read($, statsPeriod)) as Period
   // Parsed once at open (openView); a panel drawn without that open (a reload) parses here.
   const st = (await read($, statsData))?.[period] ?? (await statsFor($, period))
@@ -967,7 +1013,7 @@ async function statsView($: any, { Box, Button, Text }: any, cols: number, gui: 
   return (
     <Box key="stats-view" flexDirection="column" gap={1}>
       <Box flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
-        {viewHead($, { Box, Button, Text }, 'Stats')}
+        {viewHead($, el, 'Stats', 'stats')}
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {PERIODS.map(([p, label]) =>
             p === period ? (
@@ -1493,7 +1539,10 @@ export const register: Register = (on, options) => {
     const tier = c ? c.model : undefined
     const left = c && tier ? (c.warmUntil[tier] ?? 0) - now : 0
     if (left > 0) armTick($) // after a reload the tick is gone; a warm band starts it again
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const table: any = $.ui.resolve(e)
+    const { Box, Button, Text } = table
+    // By the surface, not by the table: the terminal's table answers for Svg too, and draws an empty Box.
+    const el = { Box, Button, Text, Svg: e.surface === 'terminal' ? undefined : table.Svg }
     // The width the band gets, re-read on every render: AbovePrompt's bodyColumns, else the viewport's columns.
     const cols = Number((e as any).props?.bodyColumns ?? e.viewport?.columns ?? 80)
     const narrow = cols < 72
@@ -1606,7 +1655,7 @@ export const register: Register = (on, options) => {
     const banner = (key: string, headline: string, sentence: string, actions: unknown) => (
       <Box key={key} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={2} rowGap={1} borderStyle="round" borderColor="warning" paddingX={1}>
         <Box flexDirection="column" flexShrink={1}>
-          <Text weight="semibold">{headline}</Text>
+          {withIcon(el, 'alert', <Text weight="semibold">{headline}</Text>, ICON_WARN)}
           <Text size="footnote" dimColor>{sentence}</Text>
         </Box>
         <Box key={`${key}-actions`} flexDirection="row" flexWrap="wrap" justifyContent="flex-end" flexGrow={1} columnGap={1} rowGap={1}>
@@ -1696,12 +1745,12 @@ export const register: Register = (on, options) => {
     // Settings and Stats draw the same whether arne is on, paused or off.
     const settingsPanel = open && view === 'settings' && (
       <Box flexDirection="column" marginTop={1}>
-        {settingsView($, { Box, Button, Text }, gui, cols, live.backend === 'jev' && !(await typesafeKey($)))}
+        {settingsView($, el, gui, cols, live.backend === 'jev' && !(await typesafeKey($)))}
       </Box>
     )
     const statsPanel = open && view === 'stats' && (
       <Box flexDirection="column" marginTop={1}>
-        {await statsView($, { Box, Button, Text }, cols, gui)}
+        {await statsView($, el, cols, gui)}
       </Box>
     )
     const below = await next(e) // other mods' bands (GeminiClaude) stack under arne
@@ -1794,8 +1843,8 @@ export const register: Register = (on, options) => {
               {statsPanel}
               {open && view === 'main' && (
                 <Box key="footer" flexDirection="row" columnGap={2} marginTop={1}>
-                  <Button key="gear" plain label="Settings" onPress={() => openView($, 'settings')} />
-                  <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />
+                  {withIcon(el, 'settings', <Button key="gear" plain label="Settings" onPress={() => openView($, 'settings')} />)}
+                  {withIcon(el, 'stats', <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />)}
                 </Box>
               )}
             </Box>
@@ -1840,8 +1889,8 @@ export const register: Register = (on, options) => {
                       {l && !pinned && thankedKey !== l.key && (
                         <Box flexDirection="row" flexShrink={0} alignItems="center" gap={1}>
                           <Text size="footnote" dimColor>Right pick?</Text>
-                          <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />
-                          <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />
+                          {withIcon(el, 'up', <Button key="up" plain label="Good call" onPress={() => feedback($, 'up')} />)}
+                          {withIcon(el, 'down', <Button key="down" plain label="Wrong call" onPress={() => feedback($, 'down')} />)}
                         </Box>
                       )}
                       {l && !pinned && thankedKey === l.key && <Text size="footnote" dimColor>Saved to arne's log.</Text>}
@@ -1924,9 +1973,9 @@ export const register: Register = (on, options) => {
                   {/* Footer: the views and Handoff… on the left, Turn off alone on the right. */}
                   <Box key="footer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1} justifyContent="space-between">
                     <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
-                      <Button key="gear" plain label="Settings" onPress={() => openView($, 'settings')} />
-                      <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />
-                      {!tableHandoff && (busy ?? <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />)}
+                      {withIcon(el, 'settings', <Button key="gear" plain label="Settings" onPress={() => openView($, 'settings')} />)}
+                      {withIcon(el, 'stats', <Button key="open-stats" plain label="Stats" onPress={() => openView($, 'stats')} />)}
+                      {!tableHandoff && (busy ?? withIcon(el, 'handoff', <Button key="handoff-menu" plain label="Handoff…" onPress={() => update($, handoffMenu, o => !o)} />))}
                       {menuOpen &&
                         !busy &&
                         !tableHandoff &&
@@ -1934,7 +1983,7 @@ export const register: Register = (on, options) => {
                           <Button key={`handoff-${TIER_NAME_OF[t]}`} plain label={`to ${name(t)}`} onPress={(p: any) => handoff($, t, p?.surface)} />
                         ))}
                     </Box>
-                    <Button key="auto" plain label="Turn arne off" onPress={() => toggleAuto($)} />
+                    {withIcon(el, 'power', <Button key="auto" plain label="Turn arne off" onPress={() => toggleAuto($)} />)}
                   </Box>
                 </Box>
               )}

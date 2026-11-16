@@ -120,6 +120,8 @@ These are effortless's own `bench/agentic` tasks (MIT): four real coding tasks o
 
 arne replaces [effortless](bench/LICENSE.effortless) by HeyCubit (MIT), and reuses its cost formulas and bench tasks.
 
+The icons in the apps are from [Lucide](https://lucide.dev) (ISC, © Lucide Contributors).
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
